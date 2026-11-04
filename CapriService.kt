@@ -28,6 +28,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.view.Gravity
 import android.view.View
@@ -44,6 +46,11 @@ import kotlin.math.abs
 
 // Capri melayang di atas app lain. Ketuk = buka/tutup chat, tahan lalu geser = pindah.
 // Suara: Capri bicara lewat Text-to-Speech Android dan mendengar lewat pengenal suara Google.
+private const val POP_INSTR = "Say one short unprompted line right now, in character: a greeting, a tease, or a random thought. Under 15 words. Do not ask a question."
+private const val CHECK_INSTR = "The user hasn't talked to you in a while. Check in on them warmly in one short sentence, in character. Ask at most one question."
+private const val FOLLOW_INSTR = "Add one short follow-up line to what you just said, in character, like a friend who thought of one more thing. Under 15 words. Do not ask a question."
+private const val REMEMBER_INSTR = "Describe in one short English sentence what the user is doing on screen right now. Only describe, no greeting."
+
 class CapriService : Service() {
     private lateinit var wm: WindowManager
     private var pet: SpriteView? = null
