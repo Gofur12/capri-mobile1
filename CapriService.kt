@@ -76,11 +76,8 @@ class CapriService : Service() {
         "high" -> 1.3f
         else -> 1.0f
     }
-    private fun petWidthDp(): Int = when (prefs().getString("size", "medium")) {
-        "small" -> 70
-        "large" -> 120
-        else -> 90
-    }
+    private fun petWidthDp(): Int =
+        (90 * (prefs().getString("size_pct", "100")?.toIntOrNull() ?: 100) / 100).coerceIn(50, 180)
 
     override fun onBind(i: Intent?): IBinder? = null
 
@@ -107,7 +104,7 @@ class CapriService : Service() {
     override fun onStartCommand(i: Intent?, flags: Int, startId: Int): Int {
         if (i?.action == "screen_start") ScreenWatch.wanted = true
         startAsForeground()
-        val key = (prefs().getString("size", "medium") ?: "medium") + "|" + (prefs().getString("perch", "off") ?: "off")
+        val key = (prefs().getString("size_pct", "100") ?: "100") + "|" + (prefs().getString("perch", "off") ?: "off")
         if (pet != null && petKey != key) {
             try { wm.removeView(pet!!) } catch (_: Exception) {}
             pet = null

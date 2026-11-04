@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.View
 import android.view.ViewGroup
@@ -18,6 +19,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -72,17 +74,26 @@ class MainActivity : Activity() {
     private fun neon(v: View) {
         when (v) {
             is Button -> {
-                v.setTextColor(0xFF05D9E8.toInt())
+                val dp = resources.displayMetrics.density
+                val primary = v.tag == "primary"
                 v.isAllCaps = false
+                v.setTextColor(if (primary) 0xFF0D1117.toInt() else 0xFF05D9E8.toInt())
                 v.background = GradientDrawable().apply {
-                    setColor(0xFF101820.toInt())
-                    setStroke((2 * resources.displayMetrics.density).toInt(), 0xFF05D9E8.toInt())
-                    cornerRadius = 0f
+                    setColor(if (primary) 0xFF05D9E8.toInt() else 0xFF101820.toInt())
+                    setStroke((1.5f * dp).toInt(), 0xFF05D9E8.toInt())
+                    cornerRadius = 14f * dp
                 }
             }
             is EditText -> {
+                val dp = resources.displayMetrics.density
                 v.setTextColor(0xFFE8F7FF.toInt())
                 v.setHintTextColor(0xFF6B7A8F.toInt())
+                v.setPadding((12 * dp).toInt(), (10 * dp).toInt(), (12 * dp).toInt(), (10 * dp).toInt())
+                v.background = GradientDrawable().apply {
+                    setColor(0xFF101820.toInt())
+                    setStroke((1 * dp).toInt(), 0xFF2A3A4F.toInt())
+                    cornerRadius = 12f * dp
+                }
             }
             is TextView -> v.setTextColor(
                 when (v.tag) {
@@ -108,6 +119,8 @@ class MainActivity : Activity() {
         fun label(t: String) = TextView(this).apply { text = t; setPadding(0, pad / 2, 0, 0) }
         fun header(t: String) = TextView(this).apply {
             tag = "h"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
             text = t
             textSize = 16f
             setPadding(0, pad, 0, 0)
@@ -237,8 +250,24 @@ class MainActivity : Activity() {
         }
         col.addView(label("Capri manggil kamu apa?"))
         col.addView(nick)
-        col.addView(label("Ukuran Capri (berlaku setelah Mulai ulang)"))
-        col.addView(size)
+        val sizeBar = SeekBar(this).apply {
+            max = 100
+            progress = ((prefs.getString("size_pct", "100")?.toIntOrNull() ?: 100) - 50).coerceIn(0, 100)
+        }
+        val sizeLabel = TextView(this).apply {
+            tag = "c"
+            text = "Ukuran: ${sizeBar.progress + 50}%"
+        }
+        sizeBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                sizeLabel.text = "Ukuran: ${p + 50}%"
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        col.addView(label("Ukuran Capri (geser, berlaku setelah Mulai ulang)"))
+        col.addView(sizeLabel)
+        col.addView(sizeBar)
 
         val robotF = numberField(prefs.getString("robot", "0") ?: "0", "0-100")
         val glitchF = numberField(prefs.getString("glitch", "0") ?: "0", "0-100")
@@ -285,6 +314,7 @@ class MainActivity : Activity() {
                 .putString("volume", volume.text.toString().trim())
                 .putString("pitch", picked(pitch))
                 .putString("size", picked(size))
+                .putString("size_pct", (sizeBar.progress + 50).toString())
                 .putString("robot", robotF.text.toString().trim())
                 .putString("glitch", glitchF.text.toString().trim())
                 .putString("hologram", picked(holo))
@@ -396,6 +426,7 @@ class MainActivity : Activity() {
         }
         val start = Button(this).apply {
             text = "2. Mulai Capri"
+            tag = "primary"
             setOnClickListener {
                 save()
                 if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
