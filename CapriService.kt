@@ -28,6 +28,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.view.Gravity
 import android.view.View
@@ -41,6 +43,18 @@ import android.widget.TextView
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.abs
+
+private const val POP_INSTR =
+    "Mulai percakapan singkat dan santai secara spontan. Jangan mengganggu; cukup satu kalimat."
+
+private const val CHECK_INSTR =
+    "Sapa pengguna dengan lembut dan tanyakan kabarnya secara singkat. Jangan mengasumsikan keadaan pengguna."
+
+private const val FOLLOW_INSTR =
+    "Lanjutkan percakapan terakhir secara alami dengan satu tanggapan singkat yang relevan."
+
+private const val REMEMBER_INSTR =
+    "Ringkas informasi yang terlihat di layar yang mungkin relevan untuk percakapan nanti. Jangan menebak informasi yang tidak terlihat."
 
 // Capri melayang di atas app lain. Ketuk = buka/tutup chat, tahan lalu geser = pindah.
 // Suara: Capri bicara lewat Text-to-Speech Android dan mendengar lewat pengenal suara Google.
