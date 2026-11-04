@@ -28,8 +28,6 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.view.Gravity
 import android.view.View
@@ -43,18 +41,6 @@ import android.widget.TextView
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.abs
-
-private const val POP_INSTR =
-    "Mulai percakapan singkat dan santai secara spontan. Jangan mengganggu; cukup satu kalimat."
-
-private const val CHECK_INSTR =
-    "Sapa pengguna dengan lembut dan tanyakan kabarnya secara singkat. Jangan mengasumsikan keadaan pengguna."
-
-private const val FOLLOW_INSTR =
-    "Lanjutkan percakapan terakhir secara alami dengan satu tanggapan singkat yang relevan."
-
-private const val REMEMBER_INSTR =
-    "Ringkas informasi yang terlihat di layar yang mungkin relevan untuk percakapan nanti. Jangan menebak informasi yang tidak terlihat."
 
 // Capri melayang di atas app lain. Ketuk = buka/tutup chat, tahan lalu geser = pindah.
 // Suara: Capri bicara lewat Text-to-Speech Android dan mendengar lewat pengenal suara Google.
@@ -121,7 +107,16 @@ class CapriService : Service() {
     override fun onStartCommand(i: Intent?, flags: Int, startId: Int): Int {
         if (i?.action == "screen_start") ScreenWatch.wanted = true
         startAsForeground()
-        if (pet == null) showPet()
+        val key = (prefs().getString("size", "medium") ?: "medium") + "|" + (prefs().getString("perch", "off") ?: "off")
+        if (pet != null && petKey != key) {
+            try { wm.removeView(pet!!) } catch (_: Exception) {}
+            pet = null
+            removeBubble()
+        }
+        if (pet == null) {
+            petKey = key
+            showPet()
+        }
         when (i?.action) {
             "hide" -> toggleHide()
             "bring" -> bringHere()
@@ -133,7 +128,12 @@ class CapriService : Service() {
                 else i?.getParcelableExtra("data")
                 if (data != null) {
                     val every = (prefs().getString("watch_every", "10")?.toLongOrNull() ?: 10L) * 1000L
-                    ScreenWatch.start(this, code, data, every)
+                    try {
+                        ScreenWatch.start(this, code, data, every)
+                    } catch (e: Exception) {
+                        ScreenWatch.wanted = false
+                        android.widget.Toast.makeText(this, "Lihat layar gagal: ${e.javaClass.simpleName} ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                    }
                 }
             }
             "screen_stop" -> {
@@ -181,6 +181,7 @@ class CapriService : Service() {
     }
 
     private var petLp: WindowManager.LayoutParams? = null
+    private var petKey = ""
     private var lastTalk = System.currentTimeMillis()
     private var lastProactive = 0L
     private var lastCheckin = 0L
@@ -220,6 +221,36 @@ class CapriService : Service() {
     private var bubble: TextView? = null
     private val bubbleHide = Runnable { removeBubble() }
     private val followRun = Runnable { proactive(FOLLOW_INSTR) }
+
+    // "buka Spotify" / "open Spotify": Capri membuka app yang namanya cocok di HP ini.
+    private fun handleOpenApp(text: String): Boolean {
+        val lower = text.trim().lowercase()
+        val prefix = listOf("buka ", "bukain ", "open ", "nyalain ").firstOrNull { lower.startsWith(it) } ?: return false
+        val query = lower.removePrefix(prefix).trim().removeSuffix(" dong").removeSuffix(" ya").trim()
+        if (query.isEmpty()) return false
+        val pm = packageManager
+        val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+        val hit = apps.firstOrNull { it.loadLabel(pm).toString().lowercase() == query }
+            ?: apps.firstOrNull { it.loadLabel(pm).toString().lowercase().contains(query) }
+        val msg = if (hit == null) {
+            "Nggak nemu app \"$query\" di HP ini."
+        } else {
+            val name = hit.loadLabel(pm).toString()
+            val launch = pm.getLaunchIntentForPackage(hit.activityInfo.packageName)
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(launch)
+                "Oke, aku bukain $name."
+            } else {
+                "App $name nggak bisa dibuka dari sini."
+            }
+        }
+        lastReply = msg
+        say(msg)
+        showBubble(msg)
+        speak(msg)
+        return true
+    }
 
     private fun removeBubble() {
         bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
@@ -602,6 +633,7 @@ class CapriService : Service() {
     }
 
     private fun ask(text: String) {
+        if (handleOpenApp(text)) return
         val p = prefs()
         val key = (p.getString("key", "") ?: "").trim()
         val model = (p.getString("model", "") ?: "").trim().ifEmpty { Brain.DEFAULT_MODEL }

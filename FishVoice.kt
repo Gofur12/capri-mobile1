@@ -20,6 +20,8 @@ object FishVoice {
         c.readTimeout = 60000
         c.doOutput = true
         c.setRequestProperty("Authorization", "Bearer $key")
+        // Model gratis seperti di PC (tanpa kredit). Tanpa header ini Fish memakai model berbayar.
+        c.setRequestProperty("model", "s2.1-pro-free")
         c.setRequestProperty("Content-Type", "application/json")
         c.outputStream.use { it.write(body.toString().toByteArray()) }
         val code = c.responseCode

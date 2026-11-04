@@ -10,7 +10,9 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
+import android.graphics.drawable.GradientDrawable
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -50,16 +52,47 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != 42) return
         if (resultCode == RESULT_OK && data != null) {
-            startForegroundService(
-                Intent(this, CapriService::class.java)
-                    .setAction("screen_start")
-                    .putExtra("code", resultCode)
-                    .putExtra("data", data)
-            )
-            Toast.makeText(this, "Capri sekarang bisa lihat layar.", Toast.LENGTH_SHORT).show()
+            try {
+                startForegroundService(
+                    Intent(this, CapriService::class.java)
+                        .setAction("screen_start")
+                        .putExtra("code", resultCode)
+                        .putExtra("data", data)
+                )
+                Toast.makeText(this, "Capri sekarang bisa lihat layar.", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Gagal mulai lihat layar: ${e.javaClass.simpleName} ${e.message}", Toast.LENGTH_LONG).show()
+            }
         } else {
             Toast.makeText(this, "Izin lihat layar dibatalkan.", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    // Tampilan gelap dengan aksen cyan dan merah, seperti Mainframe di PC.
+    private fun neon(v: View) {
+        when (v) {
+            is Button -> {
+                v.setTextColor(0xFF05D9E8.toInt())
+                v.isAllCaps = false
+                v.background = GradientDrawable().apply {
+                    setColor(0xFF101820.toInt())
+                    setStroke((2 * resources.displayMetrics.density).toInt(), 0xFF05D9E8.toInt())
+                    cornerRadius = 0f
+                }
+            }
+            is EditText -> {
+                v.setTextColor(0xFFE8F7FF.toInt())
+                v.setHintTextColor(0xFF6B7A8F.toInt())
+            }
+            is TextView -> v.setTextColor(
+                when (v.tag) {
+                    "h" -> 0xFFFF2A6D.toInt()
+                    "c" -> 0xFF6B7A8F.toInt()
+                    else -> 0xFF05D9E8.toInt()
+                }
+            )
+        }
+        if (v is ViewGroup) for (i in 0 until v.childCount) neon(v.getChildAt(i))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,6 +107,7 @@ class MainActivity : Activity() {
         }
         fun label(t: String) = TextView(this).apply { text = t; setPadding(0, pad / 2, 0, 0) }
         fun header(t: String) = TextView(this).apply {
+            tag = "h"
             text = t
             textSize = 16f
             setPadding(0, pad, 0, 0)
@@ -398,7 +432,13 @@ class MainActivity : Activity() {
         col.addView(start)
         col.addView(stop)
         col.addView(wipe)
+        credit.tag = "c"
         col.addView(credit)
-        setContentView(ScrollView(this).apply { addView(col) })
+        col.setBackgroundColor(0xFF0D1117.toInt())
+        neon(col)
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(0xFF0D1117.toInt())
+            addView(col)
+        })
     }
 }
