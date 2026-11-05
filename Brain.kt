@@ -144,6 +144,7 @@ object Brain {
                     return ask(key, model, text, nick, lang, replies, memory, note, null, context) // model tidak bisa gambar: coba tanpa gambar
                 }
                 if (code != 200) {
+                    AppLog.add("OTAK", "HTTP $code dari NVIDIA (model $model)")
                     if (!note) dropLast()
                     return when (code) {
                         401, 403 -> "API key ditolak. Cek lagi keynya (diawali nvapi-)."
@@ -163,6 +164,7 @@ object Brain {
             if (!note) remember(out)
             out
         } catch (e: Exception) {
+            AppLog.add("OTAK", "koneksi gagal: ${e.javaClass.name}: ${e.message}")
             if (!note) dropLast()
             "Koneksi gagal (${e.javaClass.simpleName}). Cek internet."
         }

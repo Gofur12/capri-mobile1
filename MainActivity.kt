@@ -37,7 +37,26 @@ class MainActivity : Activity() {
     // Dropdown dengan nilai tersimpan. Teks yang tampil di items, nilai yang disimpan di values.
     private fun pick(items: Array<String>, values: Array<String>, saved: String): Spinner {
         val sp = Spinner(this)
-        sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, items)
+        val d = resources.displayMetrics.density
+        val adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_spinner_item, items) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getView(position, convertView, parent) as TextView
+                v.setTextColor(0xFFE8F7FF.toInt())
+                return v
+            }
+
+            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getDropDownView(position, convertView, parent) as TextView
+                v.setTextColor(0xFFE8F7FF.toInt())
+                v.setBackgroundColor(0xFF101820.toInt())
+                v.setPadding((16 * d).toInt(), (12 * d).toInt(), (16 * d).toInt(), (12 * d).toInt())
+                return v
+            }
+        }
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        sp.adapter = adapter
+        sp.setPopupBackgroundDrawable(android.graphics.drawable.ColorDrawable(0xFF101820.toInt()))
+        sp.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF05D9E8.toInt())
         sp.setSelection(values.indexOf(saved).coerceAtLeast(0))
         sp.tag = values
         return sp
@@ -53,6 +72,7 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != 42) return
+        AppLog.add("LAYAR", "hasil izin layar: resultCode=$resultCode, data=${data != null}")
         if (resultCode == RESULT_OK && data != null) {
             try {
                 startForegroundService(
@@ -63,11 +83,17 @@ class MainActivity : Activity() {
                 )
                 Toast.makeText(this, "Capri sekarang bisa lihat layar.", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
+                AppLog.add("LAYAR", "gagal kirim ke layanan: ${e.javaClass.name}: ${e.message}")
                 Toast.makeText(this, "Gagal mulai lihat layar: ${e.javaClass.simpleName} ${e.message}", Toast.LENGTH_LONG).show()
             }
         } else {
             Toast.makeText(this, "Izin lihat layar dibatalkan.", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun logButton(): Button = Button(this).apply {
+        text = "Lihat log (untuk cek error)"
+        setOnClickListener { startActivity(Intent(this@MainActivity, LogActivity::class.java)) }
     }
 
     // Tampilan gelap dengan aksen cyan dan merah, seperti Mainframe di PC.
@@ -133,6 +159,7 @@ class MainActivity : Activity() {
         }
 
         // ---------- OTAK ----------
+        col.addView(logButton())
         col.addView(header("OTAK"))
         val key = EditText(this).apply {
             hint = "nvapi-..."
@@ -386,6 +413,7 @@ class MainActivity : Activity() {
         }
         col.addView(startScreen)
         col.addView(stopScreen)
+        col.addView(logButton())
 
         col.addView(header("TAMPILAN & INGATAN"))
         col.addView(label("Gelembung bicara (berapa lama muncul)"))
@@ -429,6 +457,7 @@ class MainActivity : Activity() {
             tag = "primary"
             setOnClickListener {
                 save()
+                AppLog.add("APP", "Mulai Capri ditekan (mik=${checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED}, overlay=${Settings.canDrawOverlays(this@MainActivity)})")
                 if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                     askPermissions()
                     Toast.makeText(this@MainActivity, "Izinkan mikrofon dulu, lalu tekan Mulai lagi.", Toast.LENGTH_LONG).show()
@@ -462,6 +491,7 @@ class MainActivity : Activity() {
         col.addView(overlay)
         col.addView(start)
         col.addView(stop)
+        col.addView(logButton())
         col.addView(wipe)
         credit.tag = "c"
         col.addView(credit)

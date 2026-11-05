@@ -24,6 +24,7 @@ object ScreenWatch {
     private var display: VirtualDisplay? = null
     private var ht: HandlerThread? = null
     private var lastEnc = 0L
+    @Volatile private var gotFirst = false
 
     fun start(ctx: Context, code: Int, data: Intent, intervalMs: Long) {
         stop()
@@ -31,7 +32,9 @@ object ScreenWatch {
         val thread = HandlerThread("capri-screen").also { it.start() }
         ht = thread
         val h = Handler(thread.looper)
+        AppLog.add("LAYAR", "memanggil getMediaProjection")
         val p = mpm.getMediaProjection(code, data) ?: return
+        AppLog.add("LAYAR", "projection didapat")
         p.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() { stop() }
         }, h)
@@ -46,6 +49,7 @@ object ScreenWatch {
             "capri-screen", w, hh, dm.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, r.surface, null, h
         )
+        AppLog.add("LAYAR", "virtual display dibuat (${w}x$hh)")
     }
 
     private fun onFrame(rd: ImageReader, intervalMs: Long) {
@@ -64,6 +68,7 @@ object ScreenWatch {
             crop.compress(Bitmap.CompressFormat.JPEG, 60, out)
             latest = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
             latestAt = now
+            if (!gotFirst) { gotFirst = true; AppLog.add("LAYAR", "frame pertama diterima") }
         } catch (_: Exception) {
         } finally {
             img.close()
@@ -85,5 +90,6 @@ object ScreenWatch {
         ht = null
         latest = null
         latestAt = 0L
+        gotFirst = false
     }
 }

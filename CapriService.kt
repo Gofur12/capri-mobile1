@@ -109,6 +109,7 @@ class CapriService : Service() {
     }
 
     override fun onStartCommand(i: Intent?, flags: Int, startId: Int): Int {
+        AppLog.add("LAYANAN", "onStartCommand aksi=${i?.action ?: "-"}")
         if (i?.action == "screen_start") ScreenWatch.wanted = true
         startAsForeground()
         val key = (prefs().getString("size_pct", "100") ?: "100") + "|" + (prefs().getString("perch", "off") ?: "off")
@@ -134,8 +135,10 @@ class CapriService : Service() {
                     val every = (prefs().getString("watch_every", "10")?.toLongOrNull() ?: 10L) * 1000L
                     try {
                         ScreenWatch.start(this, code, data, every)
+                        AppLog.add("LAYAR", "ScreenWatch.start selesai")
                     } catch (e: Exception) {
                         ScreenWatch.wanted = false
+                        AppLog.add("LAYAR", "start gagal: ${e.javaClass.name}: ${e.message}")
                         android.widget.Toast.makeText(this, "Lihat layar gagal: ${e.javaClass.simpleName} ${e.message}", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
@@ -168,19 +171,24 @@ class CapriService : Service() {
             .addAction(action("bring", "Bawa ke sini"))
             .build()
         val mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val wantScreen = ScreenWatch.wanted && Build.VERSION.SDK_INT >= 29
+        val withMic = mic && Build.VERSION.SDK_INT >= 30
+        var type = 0
+        if (Build.VERSION.SDK_INT >= 34) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        if (wantScreen) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        if (withMic) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         try {
-            if (Build.VERSION.SDK_INT >= 34) {
-                var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                if (mic) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                if (ScreenWatch.wanted) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                startForeground(1, n, type)
-            } else if (Build.VERSION.SDK_INT >= 30 && mic) {
-                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-            } else {
-                startForeground(1, n)
-            }
+            if (Build.VERSION.SDK_INT >= 29 && type != 0) startForeground(1, n, type)
+            else startForeground(1, n)
+            AppLog.add("LAYANAN", "foreground aktif, tipe=$type (layar=$wantScreen, mik=$withMic)")
         } catch (e: Exception) {
-            stopSelf()
+            AppLog.add("LAYANAN", "foreground gagal, tipe=$type: ${e.javaClass.name}: ${e.message}")
+            android.widget.Toast.makeText(this, "Layanan gagal: ${e.javaClass.simpleName} ${e.message?.take(120)}", android.widget.Toast.LENGTH_LONG).show()
+            try {
+                startForeground(1, n)
+            } catch (_: Exception) {
+                stopSelf()
+            }
         }
     }
 
@@ -693,7 +701,7 @@ class CapriService : Service() {
                     ui.post { playWav(wav) }
                 } catch (e: Exception) {
                     ui.post {
-                        say(lastReply + "\n(suara Fish gagal: ${e.message?.take(80)})")
+                        say(lastReply + "\n(suara Fish gagal: ${e.message?.take(80)})").also { AppLog.add("SUARA", "Fish gagal: ${e.message}") }
                         speakFallback(text)
                     }
                 }
@@ -711,7 +719,7 @@ class CapriService : Service() {
                     ui.post { playWav(wav) }
                 } catch (e: Exception) {
                     ui.post {
-                        say(lastReply + "\n(suara ElevenLabs gagal: ${e.message?.take(80)})")
+                        say(lastReply + "\n(suara ElevenLabs gagal: ${e.message?.take(80)})").also { AppLog.add("SUARA", "ElevenLabs gagal: ${e.message}") }
                         speakFallback(text)
                     }
                 }
@@ -741,6 +749,7 @@ class CapriService : Service() {
 
     private fun playWav(bytes: ByteArray) {
         stopAudio()
+        AppLog.add("SUARA", "putar audio ${bytes.size} byte, volume=${volumeLevel()}")
         try {
             val f = java.io.File(cacheDir, "capri-voice.wav")
             f.writeBytes(bytes)
@@ -753,16 +762,19 @@ class CapriService : Service() {
             )
             mp.setDataSource(f.absolutePath)
             mp.setOnPreparedListener {
+                AppLog.add("SUARA", "MediaPlayer siap, durasi ${it.duration} ms")
                 pet?.talk(lastReply, true)
                 it.setVolume(volumeLevel(), volumeLevel())
                 it.start()
             }
             mp.setOnCompletionListener {
+                AppLog.add("SUARA", "audio selesai diputar")
                 it.release()
                 if (player === it) player = null
                 spoke()
             }
-            mp.setOnErrorListener { m, _, _ ->
+            mp.setOnErrorListener { m, what, extra ->
+                AppLog.add("SUARA", "MediaPlayer error what=$what extra=$extra")
                 m.release()
                 if (player === m) player = null
                 spoke()
@@ -771,6 +783,7 @@ class CapriService : Service() {
             player = mp
             mp.prepareAsync()
         } catch (e: Exception) {
+            AppLog.add("SUARA", "playWav gagal: ${e.javaClass.name}: ${e.message}")
             spoke()
         }
     }
@@ -831,6 +844,7 @@ class CapriService : Service() {
         }
 
         override fun onError(error: Int) {
+            AppLog.add("MIK", "onError kode $error")
             listening = false
             if (panel == null && wakeOn() && error != SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS && error != SpeechRecognizer.ERROR_NETWORK) {
                 wakeLoop(800)
