@@ -7,14 +7,39 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LightingColorFilter
 import android.graphics.Paint
-import android.graphics.Rect
+import android.graphics.RectF
 import android.os.SystemClock
 import android.view.View
 import kotlin.random.Random
 
-// Sprite strip Capri: tiap frame lebar 240 px, tinggi sesuai file. Gambar digambar rata bawah.
+// Sprite strip Capri. Jumlah frame dan fps tiap animasi mengikuti versi PC. Animasi dimuat saat pertama dipakai
+// dan yang lama dilepas, supaya memori HP tidak penuh.
 class SpriteView(context: Context) : View(context) {
-    private class Clip(val frames: List<Bitmap>, val fps: Float)
+    private class Def(val frames: Int, val fps: Float, val shiftX: Float = 0f)
+    private class Clip(val frames: List<Bitmap>, val fps: Float, val shiftX: Float, var used: Long)
+
+    private val defs = mapOf(
+        "idle" to Def(16, 8f),
+        "blink" to Def(4, 8f),
+        "mouth" to Def(5, 12f),
+        "glitch" to Def(10, 15f),
+        "grin" to Def(16, 8f),
+        "dangle" to Def(24, 10f),
+        "walk" to Def(12, 12f),
+        "dance" to Def(16, 16f),
+        "arrive" to Def(14, 15f),
+        "leave" to Def(12, 15f),
+        "sleep" to Def(16, 6f),
+        "wake" to Def(13, 15f),
+        "perch" to Def(60, 30f, -26f / 384f),
+        "perch_blink" to Def(8, 30f, -26f / 384f),
+        "perch_glitch" to Def(10, 15f, -26f / 384f),
+        "perch_music" to Def(60, 30f, -26f / 384f),
+        "perch_arrive" to Def(14, 15f, -26f / 384f),
+        "perch_leave" to Def(12, 15f, -26f / 384f)
+    )
+    private val core = setOf("idle", "blink", "mouth")
+    private val maxCached = 4
 
     private val clips = HashMap<String, Clip>()
     private var cur: Clip? = null
@@ -28,36 +53,43 @@ class SpriteView(context: Context) : View(context) {
     private var mouthHold = false
     private var flip = false
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val dst = Rect()
+    private val dst = RectF()
+
+    // Animasi yang diputar setelah animasi sekali-jalan selesai (idle, perch, dance, atau sleep).
+    var rest = "idle"
 
     init {
-        load("idle", 8f)
-        load("glitch", 15f)
-        load("grin", 8f)
-        load("dangle", 10f)
-        load("blink", 8f)
-        load("mouth", 12f)
-        load("walk", 12f)
-        load("dance", 10f)
-        load("arrive", 10f)
-        load("wake", 10f)
-        load("perch", 8f)
-        load("laydown_sleep", 6f)
-        load("blink_glitch", 15f)
+        ensure("idle")
+        ensure("blink")
+        ensure("mouth")
         cur = clips["idle"]
     }
 
-    private fun load(name: String, fps: Float) {
-        val strip = context.assets.open("sprites/$name.png").use { BitmapFactory.decodeStream(it) } ?: return
-        val fw = 240
-        if (strip.width % fw != 0) { strip.recycle(); return }
-        val list = (0 until strip.width / fw).map { Bitmap.createBitmap(strip, it * fw, 0, fw, strip.height) }
-        strip.recycle()
-        clips[name] = Clip(list, fps)
+    private fun ensure(name: String): Clip? {
+        clips[name]?.let { it.used = SystemClock.uptimeMillis(); return it }
+        val def = defs[name] ?: return null
+        // buang animasi non-inti yang paling lama tidak dipakai
+        val loaded = clips.keys.filter { it !in core && it != curName }
+        if (loaded.size >= maxCached) {
+            loaded.minByOrNull { clips.getValue(it).used }?.let { old ->
+                clips.remove(old)?.frames?.forEach { it.recycle() }
+            }
+        }
+        return try {
+            val strip = context.assets.open("sprites/$name.png").use { BitmapFactory.decodeStream(it) } ?: return null
+            val fw = strip.width / def.frames
+            if (fw <= 0) { strip.recycle(); return null }
+            val list = (0 until def.frames).map { Bitmap.createBitmap(strip, it * fw, 0, fw, strip.height) }
+            strip.recycle()
+            Clip(list, def.fps, def.shiftX, SystemClock.uptimeMillis()).also { clips[name] = it }
+        } catch (e: Throwable) {
+            AppLog.add("SPRITE", "gagal memuat $name: ${e.javaClass.simpleName} ${e.message}")
+            null
+        }
     }
 
     fun play(name: String, loop: Boolean = true) {
-        val c = clips[name] ?: return
+        val c = ensure(name) ?: return
         cur = c
         curName = name
         this.loop = loop
@@ -101,26 +133,48 @@ class SpriteView(context: Context) : View(context) {
         }
     }
 
+    // Menggambar satu frame rata bawah. Skala dihitung dari lebar 240 px (frame biasa), jadi frame
+    // duduk yang lebih sempit (196 px) tetap sama besar dengan Capri berdiri.
+    private fun drawFrame(canvas: Canvas, bmp: Bitmap, shiftX: Float) {
+        val s = width / 240f
+        val dw = bmp.width * s
+        val dh = bmp.height * s
+        val left = (width - dw) / 2f + shiftX * 384f * s
+        dst.set(left, height - dh, left + dw, height.toFloat())
+        canvas.drawBitmap(bmp, null, dst, paint)
+    }
+
     override fun onDraw(canvas: Canvas) {
         val clip = cur ?: return
         val now = SystemClock.uptimeMillis()
         val t = (now - started) / 1000f
         val raw = (t * clip.fps).toInt()
-        if (!loop && raw >= clip.frames.size) { play("idle"); return }
+        if (!loop && raw >= clip.frames.size) { play(rest); return }
         val i = raw % clip.frames.size
         val c = raw / clip.frames.size
         if (c != cycle) { cycle = c; blinkOn = Random.nextFloat() < 0.45f }
 
-        val idle = curName == "idle"
-        val blink = clips["blink"]
-        val body = if (idle && blinkOn && blink != null && i in 9..12 && (i - 9) < blink.frames.size)
-            blink.frames[i - 9] else clip.frames[i]
-
-        val dh = (width * body.height / body.width.toFloat()).toInt()
-        dst.set(0, height - dh, width, height)
         canvas.save()
         if (flip) canvas.scale(-1f, 1f, width / 2f, height / 2f)
-        canvas.drawBitmap(body, null, dst, paint)
+
+        val idle = curName == "idle"
+        val blink = clips["blink"]
+        val body: Bitmap
+        var shiftX = clip.shiftX
+        if (idle && blinkOn && blink != null && i in 9..12 && (i - 9) < blink.frames.size) {
+            body = blink.frames[i - 9]
+        } else if (curName == "perch" && blinkOn && i in 28..35) {
+            val pb = ensure("perch_blink")
+            if (pb != null && (i - 28) < pb.frames.size) {
+                body = pb.frames[i - 28]
+                shiftX = pb.shiftX
+            } else {
+                body = clip.frames[i]
+            }
+        } else {
+            body = clip.frames[i]
+        }
+        drawFrame(canvas, body, shiftX)
 
         val text = mouthText
         val mouth = clips["mouth"]
@@ -130,7 +184,7 @@ class SpriteView(context: Context) : View(context) {
             if (n >= text.length) {
                 if (mouthHold) n %= text.length else { mouthText = null; n = -1 }
             }
-            if (n >= 0) canvas.drawBitmap(mouth.frames[mouthFor(text[n], letters)], null, dst, paint)
+            if (n >= 0) drawFrame(canvas, mouth.frames[mouthFor(text[n], letters)], 0f)
         }
         canvas.restore()
         postInvalidateOnAnimation()

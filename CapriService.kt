@@ -165,7 +165,7 @@ class CapriService : Service() {
         }
         val n = Notification.Builder(this, "capri")
             .setContentTitle("Capri aktif")
-            .setContentText("Ketuk Capri di layar buat ngobrol")
+            .setContentText(if (ScreenWatch.wanted) "Capri sedang melihat layar" else "Ketuk Capri di layar buat ngobrol")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .addAction(action("hide", if (hidden) "Tampilkan" else "Sembunyikan"))
             .addAction(action("bring", "Bawa ke sini"))
@@ -270,6 +270,7 @@ class CapriService : Service() {
     }
 
     private fun showBubble(msg: String) {
+        if (panel != null) return // saat chat terbuka, jawaban sudah tampil di panel
         val base = petLp ?: return
         if (pet == null) return
         removeBubble()
@@ -332,9 +333,96 @@ class CapriService : Service() {
     }
 
     private var sleeping = false
+    private var musicOn = false
+    private var perched = false
+    private var preX = 0
+    private var preY = 0
+
+    private fun edgeSit() = prefs().getString("perch", "off") == "on"
+
+    // Animasi "diam" Capri sesuai keadaan: tidur, duduk (di panel chat atau tepi), joget kalau ada musik, atau berdiri.
+    private fun restClip(): String = when {
+        sleeping -> "sleep"
+        perched || edgeSit() -> if (musicOn) "perch_music" else "perch"
+        musicOn -> "dance"
+        else -> "idle"
+    }
+
+    private fun applyRest() {
+        val v = pet ?: return
+        v.rest = restClip()
+        v.play(restClip())
+    }
+
     private val sleepRun = Runnable {
-        sleeping = true
-        pet?.play("laydown_sleep")
+        if (panel == null) {
+            sleeping = true
+            applyRest()
+        }
+    }
+
+    // Cek tiap 3 detik apakah ada musik dari app lain. Suara Capri sendiri tidak dihitung.
+    private val musicRun = object : Runnable {
+        override fun run() {
+            val am = getSystemService(AudioManager::class.java)
+            val busy = player != null || tts?.isSpeaking == true
+            val playing = prefs().getString("music", "on") == "on" && !busy && am.isMusicActive
+            if (playing != musicOn && !dragActive && !sleeping) {
+                musicOn = playing
+                AppLog.add("MUSIK", if (playing) "musik terdeteksi, Capri joget" else "musik berhenti")
+                applyRest()
+            }
+            ui.postDelayed(this, 3000L)
+        }
+    }
+
+    // Capri duduk di tepi atas panel chat, seperti di PC. Posisi diikuti terus (keyboard bisa menggeser panel).
+    private val perchRun = object : Runnable {
+        override fun run() {
+            val box = panel
+            val lp = petLp
+            val v = pet
+            if (box != null && lp != null && v != null) {
+                if (!dragActive && box.width > 0) {
+                    val loc = IntArray(2)
+                    box.getLocationOnScreen(loc)
+                    val tx = (loc[0] + box.width - lp.width - dp(6)).coerceAtLeast(0)
+                    val ty = (loc[1] - lp.height * 0.66f).toInt().coerceAtLeast(0)
+                    if (abs(tx - lp.x) > 2 || abs(ty - lp.y) > 2) {
+                        lp.x = tx
+                        lp.y = ty
+                        try { wm.updateViewLayout(v, lp) } catch (_: Exception) {}
+                    }
+                }
+                ui.postDelayed(this, 200L)
+            }
+        }
+    }
+
+    private fun startPerch() {
+        val lp = petLp ?: return
+        if (!perched) { preX = lp.x; preY = lp.y }
+        perched = true
+        sleeping = false
+        pet?.setFlip(false)
+        pet?.rest = restClip()
+        pet?.play("perch_arrive", loop = false)
+        ui.removeCallbacks(perchRun)
+        ui.post(perchRun)
+    }
+
+    private fun stopPerch() {
+        ui.removeCallbacks(perchRun)
+        if (!perched) return
+        perched = false
+        val lp = petLp
+        val v = pet
+        if (lp != null && v != null) {
+            lp.x = preX
+            lp.y = preY
+            try { wm.updateViewLayout(v, lp) } catch (_: Exception) {}
+        }
+        applyRest()
     }
     private val wanderRun = object : Runnable {
         override fun run() {
@@ -376,7 +464,21 @@ class CapriService : Service() {
 
     private fun toggleHide() {
         hidden = !hidden
-        pet?.visibility = if (hidden) View.GONE else View.VISIBLE
+        val v = pet
+        if (v != null) {
+            v.rest = restClip()
+            if (hidden) {
+                v.play(if (perched) "perch_leave" else "leave", loop = false)
+                ui.postDelayed({
+                    if (hidden) {
+                        pet?.visibility = View.GONE
+                    }
+                }, 780L)
+            } else {
+                v.visibility = View.VISIBLE
+                v.play(if (perched) "perch_arrive" else "arrive", loop = false)
+            }
+        }
         startAsForeground()
     }
 
@@ -388,7 +490,7 @@ class CapriService : Service() {
     }
 
     private fun wake() {
-        if (sleeping) { sleeping = false; pet?.play("wake", loop = false) }
+        if (sleeping) { sleeping = false; pet?.rest = restClip(); pet?.play("wake", loop = false) }
         ui.removeCallbacks(sleepRun)
         val mins = prefs().getString("sleep", "0")?.toIntOrNull() ?: 0
         if (mins > 0) ui.postDelayed(sleepRun, mins * 60_000L)
@@ -415,7 +517,7 @@ class CapriService : Service() {
         ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 1400L
             addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(a: Animator) { pet?.play("idle") }
+                override fun onAnimationEnd(a: Animator) { applyRest() }
             })
             addUpdateListener { a ->
                 val f = a.animatedFraction
@@ -444,7 +546,7 @@ class CapriService : Service() {
         val lp = WindowManager.LayoutParams(
             dp(petWidthDp()), dp(petWidthDp() * 8 / 5),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
         lp.gravity = Gravity.TOP or Gravity.START
@@ -486,7 +588,7 @@ class CapriService : Service() {
                     ui.removeCallbacks(longPressRun)
                     if (dragging) {
                         dragActive = false
-                        v.play("idle")
+                        applyRest()
                     } else if (!longFired) {
                         if (headPatsOn() && e.y < v.height * 0.35f) {
                             v.play("grin", loop = false) // elus kepala
@@ -503,15 +605,17 @@ class CapriService : Service() {
         try {
             wm.addView(v, lp)
             pet = v
-            if (prefs().getString("perch", "off") == "on") {
+            v.rest = restClip()
+            if (edgeSit()) {
                 bringHere()
-                v.play("perch")
+                v.play("perch_arrive", loop = false)
             } else {
                 v.play("arrive", loop = false)
             }
             wake()
             ui.postDelayed(wanderRun, 25000L)
             ui.postDelayed(proactiveRun, 60000L)
+            ui.postDelayed(musicRun, 3000L)
             if (wakeOn()) wakeLoop(1000)
         } catch (e: Exception) {
             stopSelf() // izin overlay belum diberikan
@@ -611,6 +715,7 @@ class CapriService : Service() {
         callBtn = call
         voiceBtn = voice
         refresh()
+        startPerch()
     }
 
     private fun closePanel() {
@@ -623,6 +728,7 @@ class CapriService : Service() {
         micBtn = null
         callBtn = null
         voiceBtn = null
+        stopPerch()
         if (wakeOn()) wakeLoop(800)
     }
 
@@ -665,7 +771,14 @@ class CapriService : Service() {
             val lang = p.getString("lang", "id") ?: "id"
             val replies = p.getString("replies", "short") ?: "short"
             val memory = p.getString("memory", "20")?.toIntOrNull() ?: 20
-            val img = if (prefs().getString("watch", "off") == "on") ScreenWatch.freshB64(90_000L) else null
+            val watchOn = prefs().getString("watch", "off") == "on"
+            val img = if (watchOn) ScreenWatch.freshB64(90_000L) else null
+            AppLog.add(
+                "LAYAR",
+                if (img != null) "gambar layar dikirim ke otak (${img.length / 1024} KB)"
+                else if (watchOn) "Lihat layar nyala, tapi belum ada gambar terbaru"
+                else "Lihat layar mati di pengaturan, gambar tidak dikirim"
+            )
             val ctx = synchronized(screenLines) { screenLines.joinToString("; ") }
             val out = Brain.ask(key, model, text, nick, lang, replies, memory, false, img, ctx)
             ui.post {
@@ -676,7 +789,7 @@ class CapriService : Service() {
                     ui.removeCallbacks(followRun)
                     ui.postDelayed(followRun, 30_000L)
                 }
-                pet?.play("idle")
+                applyRest()
                 speak(out)
             }
         }

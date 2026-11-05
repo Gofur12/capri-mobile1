@@ -20,7 +20,6 @@ object Brain {
         "Never sound like customer support: no 'How can I help?', no disclaimers, no lists. Talk like a friend texting. " +
         "Use Night City slang sparingly: at most one word like 'choom' per reply, and most replies have none. " +
         "When they are tired or hurting, drop the jokes and be warm and plain. " +
-        "You only know what they type or say to you, so never pretend to see their screen. " +
         "Your replies are spoken out loud, so write plain speakable text: no emoji, no markdown, no asterisks."
 
     private val history = ArrayList<Pair<String, String>>()
@@ -115,6 +114,12 @@ object Brain {
                 else -> " Keep replies to two or three sentences."
             }
         )
+        parts.append(
+            if (image != null)
+                " The user's current phone screen is attached to their message as an image. You CAN see it: look at it and react to what is on it, naturally and briefly, like a friend looking over their shoulder."
+            else
+                " You can only see what they type or say to you, so never pretend to see their screen."
+        )
         if (context.isNotBlank()) parts.append(" Recent things you have seen on the user's screen, oldest first: $context. Mention them only when relevant.")
         if (nick.isNotBlank()) parts.append(" The user wants to be called $nick. Use the name now and then, not in every reply.")
         val msgs = messages(text, parts.toString(), note, image)
@@ -140,6 +145,7 @@ object Brain {
                 c.outputStream.use { it.write(body.toString().toByteArray()) }
                 val code = c.responseCode
                 if (code == 400 && image != null) {
+                    AppLog.add("OTAK", "model $model menolak gambar (HTTP 400), dicoba lagi tanpa gambar")
                     if (!note) dropLast()
                     return ask(key, model, text, nick, lang, replies, memory, note, null, context) // model tidak bisa gambar: coba tanpa gambar
                 }

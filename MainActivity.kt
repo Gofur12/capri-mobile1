@@ -321,6 +321,7 @@ class MainActivity : Activity() {
         val mini = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("mini", "off") ?: "off")
         val perch = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("perch", "off") ?: "off")
 
+        val music = pick(arrayOf("Nyala", "Mati"), arrayOf("on", "off"), prefs.getString("music", "on") ?: "on")
         fun save() {
             prefs.edit()
                 .putString("key", key.text.toString().trim())
@@ -348,6 +349,7 @@ class MainActivity : Activity() {
                 .putString("headpats", picked(headPats))
                 .putString("sleep", picked(sleepSp))
                 .putString("wander", picked(wander))
+                .putString("music", picked(music))
                 .putString("popins", picked(popins))
                 .putString("checkin", picked(checkin))
                 .putString("chaos", picked(chaos))
@@ -379,6 +381,8 @@ class MainActivity : Activity() {
         col.addView(sleepSp)
         col.addView(label("Jalan-jalan sendiri di layar"))
         col.addView(wander)
+        col.addView(label("Capri joget kalau ada musik diputar"))
+        col.addView(music)
 
         col.addView(header("OBROLAN & SUARA TAMBAHAN"))
         col.addView(label("Capri ngomong duluan (sesekali)"))
