@@ -18,6 +18,8 @@
     <application
         android:name=".CapriApp"
         android:label="Capri Mobile"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.Light">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>

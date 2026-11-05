@@ -8,7 +8,9 @@ jobs:
       - name: Susun folder
         run: |
           D=app/src/main/java/app/capri/mobile
-          mkdir -p $D app/src/main/assets/sprites app/src/main
+          R=app/src/main/res
+          mkdir -p $D app/src/main/assets/sprites app/src/main $R/mipmap-mdpi $R/mipmap-hdpi $R/mipmap-xhdpi $R/mipmap-xxhdpi $R/mipmap-xxxhdpi
+          for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do cp ic_launcher.png $R/mipmap-$density/ic_launcher.png; done
           mv *.kt $D/
           mv *.png app/src/main/assets/sprites/
           mv AndroidManifest.xml app/src/main/
