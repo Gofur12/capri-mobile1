@@ -28,4 +28,3 @@ jobs:
         with:
           name: capri-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          
