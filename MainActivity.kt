@@ -513,6 +513,7 @@ class MainActivity : Activity() {
         toggle(scr, "Capri lihat layar kamu", "watch", false)
         toggle(scr, "Ingat apa yang dilihat (tiap menit)", "remember", false)
         slider(scr, "Jumlah catatan layar yang diingat", "watchmem", 10, 96, Cfg.WATCHMEM, cy, fmt = { "$it catatan" })
+        slider(scr, "Lama tangkapan layar disimpan", "watchsave", 5, 60, Cfg.WATCHSAVE, cy, fmt = { "$it detik" })
         button(scr, "Mulai lihat layar (Android minta izin)", primary = true) {
             val mpm = getSystemService(android.media.projection.MediaProjectionManager::class.java)
             startActivityForResult(mpm.createScreenCaptureIntent(), 42)

@@ -16,19 +16,22 @@ import android.util.Base64
 import java.io.ByteArrayOutputStream
 
 // Lihat layar: frame terbaru selalu ditahan (tanpa diubah dulu), lalu diubah jadi JPEG hanya saat dibutuhkan.
-// Dengan begitu gambar yang dikirim ke otak selalu keadaan layar yang paling baru, walau layar sedang diam.
+// Tangkapan layar hanya disimpan selama maxAgeMs, lalu dianggap kadaluarsa.
 object ScreenWatch {
     @Volatile var wanted = false
     private val lock = Any()
     private var held: Image? = null
+    @Volatile private var capturedAt = 0L
+    @Volatile private var maxAgeMs = 0L
     private var projection: MediaProjection? = null
     private var reader: ImageReader? = null
     private var display: VirtualDisplay? = null
     private var ht: HandlerThread? = null
     @Volatile private var gotFirst = false
 
-    fun start(ctx: Context, code: Int, data: Intent, intervalMs: Long) {
+    fun start(ctx: Context, code: Int, data: Intent, intervalMs: Long, saveMs: Long) {
         stop()
+        maxAgeMs = saveMs
         val mpm = ctx.getSystemService(MediaProjectionManager::class.java)
         val thread = HandlerThread("capri-screen").also { it.start() }
         ht = thread
@@ -59,6 +62,7 @@ object ScreenWatch {
         synchronized(lock) {
             held?.close()
             held = img
+            capturedAt = System.currentTimeMillis()
         }
         if (!gotFirst) {
             gotFirst = true
@@ -66,9 +70,11 @@ object ScreenWatch {
         }
     }
 
-    // Gambar layar terbaru sebagai JPEG base64, atau null kalau belum ada frame.
+    // Gambar layar terbaru sebagai JPEG base64, atau null kalau belum ada frame atau sudah lewat batas simpan.
     fun latestB64(): String? = synchronized(lock) {
         val img = held ?: return null
+        val now = System.currentTimeMillis()
+        if (maxAgeMs > 0 && now - capturedAt > maxAgeMs) return null
         try {
             val plane = img.planes[0]
             val pixelStride = plane.pixelStride
@@ -86,7 +92,7 @@ object ScreenWatch {
         }
     }
 
-    // Nama lama dipertahankan: umur gambar tidak dibatasi lagi karena frame yang ditahan selalu yang terbaru.
+    // Nama lama dipertahankan: umur gambar dibatasi sesuai maxAgeMs yang diatur di pengaturan.
     @Suppress("UNUSED_PARAMETER")
     fun freshB64(maxAgeMs: Long): String? = latestB64()
 

@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.os.SystemClock
 import android.view.View
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.random.Random
 
 // Glitch di sebagian layar: pita warna, kotak piksel, garis scan, dan robekan. Hanya gambar di atas layar,
@@ -17,6 +19,7 @@ class GlitchView(context: Context) : View(context) {
     private var strength = 1f
     private var centerY = 0f
     private var areaFrac = 0.5f
+    private var crackMode = false
     private val colors = intArrayOf(
         0xFF05D9E8.toInt(), 0xFFFF2A6D.toInt(), 0xFFFFFFFF.toInt(), 0xFF9B6BFF.toInt(), 0xFF8CFF6A.toInt()
     )
@@ -31,9 +34,24 @@ class GlitchView(context: Context) : View(context) {
         invalidate()
     }
 
+    // Glitch retakan: garis retak yang meluas dari satu titik, setengah layar.
+    fun burstCrack(ms: Long, strength: Float, centerY: Float, areaFrac: Float) {
+        val now = SystemClock.uptimeMillis()
+        start = now
+        until = now + ms
+        this.strength = strength.coerceIn(0.2f, 1f)
+        this.centerY = centerY
+        this.areaFrac = areaFrac.coerceIn(0.05f, 1f)
+        crackMode = true
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         val now = SystemClock.uptimeMillis()
-        if (now >= until) return
+        if (now >= until) {
+            crackMode = false
+            return
+        }
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
@@ -95,6 +113,39 @@ class GlitchView(context: Context) : View(context) {
             paint.color = colors[rnd.nextInt(2)]
             paint.alpha = (120 * power).toInt().coerceIn(0, 255)
             canvas.drawRect(rnd.nextFloat() * w * 0.2f, y2 + d * 3f, w, y2 + d * 6f, paint)
+        }
+        // 6. retakan layar (jika mode retak)
+        if (crackMode && rnd.nextFloat() < 0.8f) {
+            val cx = w * 0.5f
+            val cy = centerY
+            val len = w * 0.6f * power
+            val branches = (3 + 4 * power).toInt()
+            paint.color = Color.WHITE
+            paint.alpha = (200 * power).toInt().coerceIn(0, 255)
+            paint.strokeWidth = d * (1.5f + 2f * power)
+            paint.style = Paint.Style.STROKE
+            for (b in 0 until branches) {
+                val ang = (rnd.nextFloat() - 0.5f) * 3.14159f
+                var x = cx
+                var y = cy
+                var segLen = len / (2f + rnd.nextFloat() * 2f)
+                var dirX = cos(ang)
+                var dirY = sin(ang)
+                val pathSegments = (2 + rnd.nextInt(4)).coerceAtLeast(1)
+                canvas.drawLine(x, y, x + dirX * segLen, y + dirY * segLen, paint)
+                x += dirX * segLen
+                y += dirY * segLen
+                for (s in 1 until pathSegments) {
+                    val bend = ang + (rnd.nextFloat() - 0.5f) * 1.2f
+                    segLen *= 0.7f
+                    dirX = cos(bend)
+                    dirY = sin(bend)
+                    canvas.drawLine(x, y, x + dirX * segLen, y + dirY * segLen, paint)
+                    x += dirX * segLen
+                    y += dirY * segLen
+                }
+            }
+            paint.style = Paint.Style.FILL
         }
         postInvalidateOnAnimation()
     }

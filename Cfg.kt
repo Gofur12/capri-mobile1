@@ -13,6 +13,7 @@ object Cfg {
     const val MEMORY = 20
     const val BUBBLE_SEC = 12
     const val WATCHMEM = 20
+    const val WATCHSAVE = 60
     const val SIZE = 100
     const val STAB = 40
     const val SIM = 75
