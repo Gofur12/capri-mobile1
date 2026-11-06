@@ -2,70 +2,339 @@ package app.capri.mobile
 
 import android.Manifest
 import android.app.Activity
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.LinearGradient
+import android.graphics.Shader
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
 import android.text.InputType
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.text.TextWatcher
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import java.util.Locale
+import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
+    private val bg = 0xFF0A0E16.toInt()
+    private val cardBg = 0xFF111826.toInt()
+    private val cy = 0xFF05D9E8.toInt()
+    private val pk = 0xFFFF2A6D.toInt()
+    private val pu = 0xFF9B6BFF.toInt()
+    private val ye = 0xFFF9D342.toInt()
+    private val lm = 0xFF8CFF6A.toInt()
+    private val tx = 0xFFE8F7FF.toInt()
+    private val muted = 0xFF7A8AA3.toInt()
+    private val fieldBg = 0xFF0B1120.toInt()
+
+    private lateinit var col: LinearLayout
+    private val refreshers = ArrayList<() -> Unit>()
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun withAlpha(c: Int, a: Int) = (c and 0x00FFFFFF) or (a shl 24)
+    private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
     private fun askPermissions() {
         val list = ArrayList<String>()
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) list.add(Manifest.permission.RECORD_AUDIO)
+        if (!hasMic()) list.add(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             list.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         if (list.isNotEmpty()) requestPermissions(list.toTypedArray(), 1)
     }
 
-    // Dropdown dengan nilai tersimpan. Teks yang tampil di items, nilai yang disimpan di values.
-    private fun pick(items: Array<String>, values: Array<String>, saved: String): Spinner {
-        val sp = Spinner(this)
+    // ---------- Komponen tampilan ----------
+
+    private fun rounded(fill: Int, stroke: Int, radiusDp: Int, strokeDp: Float = 1f) = GradientDrawable().apply {
+        setColor(fill)
+        setStroke((strokeDp * resources.displayMetrics.density).toInt(), stroke)
+        cornerRadius = dp(radiusDp).toFloat()
+    }
+
+    private fun card(title: String, sub: String, accent: Int): LinearLayout {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(cardBg, withAlpha(accent, 0x66), 16)
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            clipToOutline = true
+        }
+        val bar = View(this).apply { setBackgroundColor(accent) }
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(14))
+        }
+        wrap.addView(bar, LinearLayout.LayoutParams(dp(5), ViewGroup.LayoutParams.MATCH_PARENT))
+        wrap.addView(body, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        body.addView(TextView(this).apply {
+            text = title
+            setTextColor(accent)
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            letterSpacing = 0.1f
+        })
+        if (sub.isNotEmpty()) {
+            body.addView(TextView(this).apply {
+                text = sub
+                setTextColor(muted)
+                textSize = 11f
+                setPadding(0, dp(2), 0, dp(4))
+            })
+        }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.setMargins(0, dp(10), 0, 0)
+        col.addView(wrap, lp)
+        return body
+    }
+
+    private fun caption(p: LinearLayout, t: String) {
+        p.addView(TextView(this).apply {
+            text = t
+            setTextColor(tx)
+            textSize = 13f
+            setPadding(0, dp(10), 0, dp(2))
+        })
+    }
+
+    private fun note(p: LinearLayout, t: String) {
+        p.addView(TextView(this).apply {
+            text = t
+            setTextColor(muted)
+            textSize = 11f
+            setPadding(0, dp(4), 0, 0)
+        })
+    }
+
+    private fun pillBg(color: Int, left: Boolean): GradientDrawable {
+        val r = dp(10).toFloat()
+        return GradientDrawable().apply {
+            setColor(color)
+            cornerRadii = if (left) floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r) else floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+        }
+    }
+
+    // Saklar OFF / ON seperti di PC: OFF merah muda, ON cyan.
+    private fun toggle(p: LinearLayout, labelText: String, key: String, def: Boolean) {
+        var state = Cfg.on(this, key, def)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, dp(2))
+        }
+        val name = TextView(this).apply {
+            text = labelText
+            setTextColor(tx)
+            textSize = 13f
+        }
+        val offV = TextView(this).apply {
+            text = "OFF"
+            gravity = Gravity.CENTER
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+        }
+        val onV = TextView(this).apply {
+            text = "ON"
+            gravity = Gravity.CENTER
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+        }
+        fun paint() {
+            offV.background = pillBg(if (!state) pk else 0xFF1B2638.toInt(), true)
+            offV.setTextColor(if (!state) 0xFFFFFFFF.toInt() else muted)
+            onV.background = pillBg(if (state) cy else 0xFF1B2638.toInt(), false)
+            onV.setTextColor(if (state) 0xFF0A0E16.toInt() else muted)
+        }
+        paint()
+        offV.setOnClickListener { state = false; Cfg.set(this, key, "off"); paint() }
+        onV.setOnClickListener { state = true; Cfg.set(this, key, "on"); paint() }
+        row.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(offV, LinearLayout.LayoutParams(dp(52), dp(30)))
+        row.addView(onV, LinearLayout.LayoutParams(dp(52), dp(30)))
+        p.addView(row)
+    }
+
+    // Slider untuk semua pengaturan angka. Tersimpan langsung saat digeser.
+    private fun slider(
+        p: LinearLayout, labelText: String, key: String, lo: Int, hi: Int, def: Int, accent: Int,
+        fmt: (Int) -> String = { it.toString() },
+        load: (String?) -> Int? = { it?.toIntOrNull() },
+        store: (Int) -> String = { it.toString() }
+    ) {
+        var now = (load(Cfg.prefs(this).getString(key, null)) ?: def).coerceIn(lo, hi)
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        val name = TextView(this).apply {
+            text = labelText
+            setTextColor(tx)
+            textSize = 13f
+        }
+        val value = TextView(this).apply {
+            text = fmt(now)
+            setTextColor(accent)
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.END
+        }
+        head.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        head.addView(value)
+        val bar = SeekBar(this).apply {
+            this.max = hi - lo
+            progress = now - lo
+            progressTintList = ColorStateList.valueOf(accent)
+            thumbTintList = ColorStateList.valueOf(pk)
+            progressBackgroundTintList = ColorStateList.valueOf(0xFF2A3A4F.toInt())
+        }
+        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                now = lo + progress
+                value.text = fmt(now)
+                if (fromUser) Cfg.set(this@MainActivity, key, store(now))
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        p.addView(head)
+        p.addView(bar)
+    }
+
+    // Pilihan dropdown dengan teks terang di latar gelap.
+    private fun choice(p: LinearLayout, labelText: String, key: String, items: Array<String>, values: Array<String>, def: String) {
+        caption(p, labelText)
         val d = resources.displayMetrics.density
         val adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_spinner_item, items) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val v = super.getView(position, convertView, parent) as TextView
-                v.setTextColor(0xFFE8F7FF.toInt())
+                v.setTextColor(tx)
                 return v
             }
 
             override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val v = super.getDropDownView(position, convertView, parent) as TextView
-                v.setTextColor(0xFFE8F7FF.toInt())
-                v.setBackgroundColor(0xFF101820.toInt())
+                v.setTextColor(tx)
+                v.setBackgroundColor(cardBg)
                 v.setPadding((16 * d).toInt(), (12 * d).toInt(), (16 * d).toInt(), (12 * d).toInt())
                 return v
             }
         }
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        val sp = Spinner(this)
         sp.adapter = adapter
-        sp.setPopupBackgroundDrawable(android.graphics.drawable.ColorDrawable(0xFF101820.toInt()))
-        sp.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF05D9E8.toInt())
-        sp.setSelection(values.indexOf(saved).coerceAtLeast(0))
-        sp.tag = values
-        return sp
+        sp.setPopupBackgroundDrawable(ColorDrawable(cardBg))
+        sp.backgroundTintList = ColorStateList.valueOf(cy)
+        sp.setSelection(values.indexOf(Cfg.str(this, key, def)).coerceAtLeast(0))
+        sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                Cfg.set(this@MainActivity, key, values[position])
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        p.addView(sp)
     }
 
-    private fun picked(sp: Spinner): String {
-        @Suppress("UNCHECKED_CAST")
-        val values = sp.tag as Array<String>
-        return values[sp.selectedItemPosition]
+    private fun textField(p: LinearLayout, labelText: String, key: String, hintText: String, secret: Boolean, defText: String = "") {
+        caption(p, labelText)
+        val saved = Cfg.prefs(this).getString(key, null)
+        val et = EditText(this).apply {
+            hint = hintText
+            setText(saved ?: defText)
+            setSingleLine()
+            if (secret) inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setTextColor(tx)
+            setHintTextColor(muted)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(fieldBg, 0xFF2A3A4F.toInt(), 12)
+        }
+        et.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) { Cfg.set(this@MainActivity, key, s.toString().trim()) }
+        })
+        p.addView(et)
+    }
+
+    private fun button(p: LinearLayout, label: String, primary: Boolean = false, danger: Boolean = false, onClick: () -> Unit) {
+        val b = Button(this).apply {
+            text = label
+            isAllCaps = false
+            setTextColor(if (primary) 0xFF0A0E16.toInt() else if (danger) pk else cy)
+            background = rounded(if (primary) cy else 0xFF101820.toInt(), if (danger) pk else cy, 14, 1.5f)
+            setOnClickListener { onClick() }
+        }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.setMargins(0, dp(8), 0, 0)
+        p.addView(b, lp)
+    }
+
+    // Baris status izin: titik hijau kalau sudah, merah kalau belum, plus tombol untuk membukanya.
+    private fun statusRow(p: LinearLayout, labelText: String, check: () -> Boolean, actionText: String, action: () -> Unit) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        val dot = TextView(this).apply { text = "●"; textSize = 16f }
+        val name = TextView(this).apply {
+            text = labelText
+            setTextColor(tx)
+            textSize = 13f
+            setPadding(dp(8), 0, 0, 0)
+        }
+        val act = Button(this).apply {
+            text = actionText
+            isAllCaps = false
+            textSize = 12f
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            setTextColor(cy)
+            background = rounded(0xFF101820.toInt(), cy, 12, 1f)
+            setOnClickListener { action() }
+        }
+        row.addView(dot)
+        row.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(act)
+        p.addView(row)
+        refreshers.add { dot.setTextColor(if (check()) lm else pk) }
+    }
+
+    // ---------- Aksi ----------
+
+    private fun startCapri() {
+        AppLog.add("APP", "Mulai Capri ditekan (mik=${hasMic()}, overlay=${Settings.canDrawOverlays(this)})")
+        if (!hasMic()) {
+            askPermissions()
+            Toast.makeText(this, "Izinkan mikrofon dulu, lalu tekan Mulai lagi.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Izinkan tampil di atas app lain dulu.", Toast.LENGTH_LONG).show()
+            return
+        }
+        stopService(Intent(this, CapriService::class.java))
+        startForegroundService(Intent(this, CapriService::class.java))
     }
 
     @Suppress("DEPRECATION")
@@ -91,419 +360,195 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun logButton(): Button = Button(this).apply {
-        text = "Lihat log (untuk cek error)"
-        setOnClickListener { startActivity(Intent(this@MainActivity, LogActivity::class.java)) }
-    }
-
-    // Tampilan gelap dengan aksen cyan dan merah, seperti Mainframe di PC.
-    private fun neon(v: View) {
-        when (v) {
-            is Button -> {
-                val dp = resources.displayMetrics.density
-                val primary = v.tag == "primary"
-                v.isAllCaps = false
-                v.setTextColor(if (primary) 0xFF0D1117.toInt() else 0xFF05D9E8.toInt())
-                v.background = GradientDrawable().apply {
-                    setColor(if (primary) 0xFF05D9E8.toInt() else 0xFF101820.toInt())
-                    setStroke((1.5f * dp).toInt(), 0xFF05D9E8.toInt())
-                    cornerRadius = 14f * dp
-                }
-            }
-            is EditText -> {
-                val dp = resources.displayMetrics.density
-                v.setTextColor(0xFFE8F7FF.toInt())
-                v.setHintTextColor(0xFF6B7A8F.toInt())
-                v.setPadding((12 * dp).toInt(), (10 * dp).toInt(), (12 * dp).toInt(), (10 * dp).toInt())
-                v.background = GradientDrawable().apply {
-                    setColor(0xFF101820.toInt())
-                    setStroke((1 * dp).toInt(), 0xFF2A3A4F.toInt())
-                    cornerRadius = 12f * dp
-                }
-            }
-            is TextView -> v.setTextColor(
-                when (v.tag) {
-                    "h" -> 0xFFFF2A6D.toInt()
-                    "c" -> 0xFF6B7A8F.toInt()
-                    else -> 0xFF05D9E8.toInt()
-                }
-            )
-        }
-        if (v is ViewGroup) for (i in 0 until v.childCount) neon(v.getChildAt(i))
+    override fun onResume() {
+        super.onResume()
+        for (r in refreshers) r()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         askPermissions()
-
-        val prefs = getSharedPreferences("capri", Context.MODE_PRIVATE)
-        val pad = (20 * resources.displayMetrics.density).toInt()
-        val col = LinearLayout(this).apply {
+        val pad = dp(16)
+        col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
+            setPadding(pad, dp(18), pad, dp(28))
         }
-        fun label(t: String) = TextView(this).apply { text = t; setPadding(0, pad / 2, 0, 0) }
-        fun header(t: String) = TextView(this).apply {
-            tag = "h"
-            textSize = 13f
+
+        // ----- Kepala -----
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(4))
+        }
+        val icon = ImageView(this).apply {
+            try { setImageDrawable(applicationInfo.loadIcon(packageManager)) } catch (_: Exception) {}
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            background = rounded(cardBg, cy, 16, 1.5f)
+            clipToOutline = true
+        }
+        val titleBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        val title = TextView(this).apply {
+            text = "CAPRI MOBILE"
+            textSize = 24f
             setTypeface(null, Typeface.BOLD)
-            text = t
-            textSize = 16f
-            setPadding(0, pad, 0, 0)
-        }
-        fun numberField(v: String, hint: String = "") = EditText(this).apply {
-            setText(v)
-            this.hint = hint
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-        }
-
-        // ---------- OTAK ----------
-        col.addView(logButton())
-        col.addView(header("OTAK"))
-        val key = EditText(this).apply {
-            hint = "nvapi-..."
-            setText(prefs.getString("key", ""))
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        val model = EditText(this).apply {
-            setText(prefs.getString("model", Brain.DEFAULT_MODEL))
-            setSingleLine()
-        }
-        val lang = pick(
-            arrayOf("Bahasa Indonesia", "English", "Ikut bahasa kamu"),
-            arrayOf("id", "en", "auto"),
-            prefs.getString("lang", "id") ?: "id"
-        )
-        val replies = pick(
-            arrayOf("Pendek", "Normal", "Panjang"),
-            arrayOf("short", "normal", "long"),
-            prefs.getString("replies", "short") ?: "short"
-        )
-        val memory = pick(
-            arrayOf("Pendek (8 pesan)", "Normal (20 pesan)", "Panjang (40 pesan)"),
-            arrayOf("8", "20", "40"),
-            prefs.getString("memory", "20") ?: "20"
-        )
-        col.addView(label("API key NVIDIA (gratis di build.nvidia.com, disimpan hanya di HP ini)"))
-        col.addView(key)
-        col.addView(label("Model otak"))
-        col.addView(model)
-        col.addView(label("Bahasa Capri"))
-        col.addView(lang)
-        col.addView(label("Panjang jawaban"))
-        col.addView(replies)
-        col.addView(label("Ingatan chat"))
-        col.addView(memory)
-
-        // ---------- SUARA ----------
-        col.addView(header("SUARA"))
-        val voiceMode = pick(
-            arrayOf("Mati (teks saja)", "Suara HP", "ElevenLabs", "Fish Audio"),
-            arrayOf("off", "phone", "cloud", "fish"),
-            prefs.getString("voice_mode", "cloud") ?: "cloud"
-        )
-        val eKey = EditText(this).apply {
-            hint = "sk_... (ElevenLabs)"
-            setText(prefs.getString("eleven_key", ""))
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        val eVoice = EditText(this).apply {
-            hint = "Voice ID ElevenLabs"
-            setText(prefs.getString("eleven_voice", ""))
-            setSingleLine()
-        }
-        val fKey = EditText(this).apply {
-            hint = "Fish Audio API key"
-            setText(prefs.getString("fish_key", ""))
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        val fVoice = EditText(this).apply {
-            hint = "Voice ID Fish Audio"
-            setText(prefs.getString("fish_voice", ""))
-            setSingleLine()
-        }
-        val eModel = pick(
-            arrayOf("Default (eleven_v4_turbo)", "Flash v2.5 (lebih cepat)", "Multilingual v2"),
-            arrayOf("eleven_v4_turbo", "eleven_flash_v2_5", "eleven_multilingual_v2"),
-            prefs.getString("eleven_model", "eleven_v4_turbo") ?: "eleven_v4_turbo"
-        )
-        val eStab = numberField(prefs.getString("eleven_stab", "")?.ifEmpty { null } ?: ElevenVoice.DEFAULT_STABILITY.toString(), "0-1")
-        val eSim = numberField(prefs.getString("eleven_sim", "")?.ifEmpty { null } ?: ElevenVoice.DEFAULT_SIMILARITY.toString(), "0-1")
-        val eSpeed = numberField(prefs.getString("eleven_speed", "")?.ifEmpty { null } ?: ElevenVoice.DEFAULT_SPEED.toString(), "0.7-1.2")
-        val volume = numberField(prefs.getString("volume", "100") ?: "100", "50-150")
-        val pitch = pick(
-            arrayOf("Rendah", "Normal", "Tinggi"),
-            arrayOf("low", "normal", "high"),
-            prefs.getString("pitch", "normal") ?: "normal"
-        )
-        col.addView(label("Suara"))
-        col.addView(voiceMode)
-        col.addView(label("Fish Audio API key (kalau pilih Fish Audio)"))
-        col.addView(fKey)
-        col.addView(label("Voice ID Fish Audio"))
-        col.addView(fVoice)
-        col.addView(label("ElevenLabs API key"))
-        col.addView(eKey)
-        col.addView(label("Voice ID"))
-        col.addView(eVoice)
-        col.addView(label("Model ElevenLabs"))
-        col.addView(eModel)
-        col.addView(label("Stability (0-1, makin kecil makin ekspresif, nggak monoton)"))
-        col.addView(eStab)
-        col.addView(label("Similarity (0-1)"))
-        col.addView(eSim)
-        col.addView(label("Speed (0.7-1.2, juga dipakai suara HP)"))
-        col.addView(eSpeed)
-        col.addView(label("Volume (50-150%, di HP maksimal = volume HP)"))
-        col.addView(volume)
-        col.addView(label("Pitch (suara HP)"))
-        col.addView(pitch)
-
-        // ---------- CAPRI ----------
-        col.addView(header("CAPRI"))
-        val size = pick(
-            arrayOf("Kecil", "Sedang", "Besar"),
-            arrayOf("small", "medium", "large"),
-            prefs.getString("size", "medium") ?: "medium"
-        )
-        val nick = EditText(this).apply {
-            hint = "mis. brezze (boleh kosong)"
-            setText(prefs.getString("nick", ""))
-            setSingleLine()
-        }
-        col.addView(label("Capri manggil kamu apa?"))
-        col.addView(nick)
-        val sizeBar = SeekBar(this).apply {
-            max = 100
-            progress = ((prefs.getString("size_pct", "100")?.toIntOrNull() ?: 100) - 50).coerceIn(0, 100)
-        }
-        val sizeLabel = TextView(this).apply {
-            tag = "c"
-            text = "Ukuran: ${sizeBar.progress + 50}%"
-        }
-        sizeBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                sizeLabel.text = "Ukuran: ${p + 50}%"
-            }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
-        })
-        col.addView(label("Ukuran Capri (geser, berlaku setelah Mulai ulang)"))
-        col.addView(sizeLabel)
-        col.addView(sizeBar)
-
-        val robotF = numberField(prefs.getString("robot", "0") ?: "0", "0-100")
-        val glitchF = numberField(prefs.getString("glitch", "0") ?: "0", "0-100")
-        val holo = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("hologram", "off") ?: "off")
-        val headPats = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("headpats", "on") ?: "on")
-        val sleepSp = pick(arrayOf("Mati", "Setelah 5 menit", "Setelah 15 menit"), arrayOf("0", "5", "15"), prefs.getString("sleep", "0") ?: "0")
-        val wander = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("wander", "off") ?: "off")
-        val views = arrayOf<android.view.View>(robotF, glitchF, holo, headPats, sleepSp, wander)
-
-        val popins = pick(arrayOf("Mati", "Jarang (45 menit)", "Sering (15 menit)"), arrayOf("off", "rare", "often"), prefs.getString("popins", "off") ?: "off")
-        val checkin = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("checkin", "off") ?: "off")
-        val chaos = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("chaos", "off") ?: "off")
-        val typing = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("typingsound", "off") ?: "off")
-        val sounds = numberField(prefs.getString("sounds", "100") ?: "100", "0-100")
-        val wake = pick(arrayOf("Mati", "Nyala (boros baterai)"), arrayOf("off", "on"), prefs.getString("wake", "off") ?: "off")
-
-        val watch = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("watch", "off") ?: "off")
-        val watchEvery = pick(arrayOf("5 detik", "10 detik", "30 detik"), arrayOf("5", "10", "30"), prefs.getString("watch_every", "10") ?: "10")
-
-        val bubble = pick(arrayOf("Cepat (6 detik)", "Normal (12 detik)", "Lama (25 detik)"), arrayOf("quick", "normal", "long"), prefs.getString("bubble", "normal") ?: "normal")
-        val followup = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("followup", "off") ?: "off")
-        val remember = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("remember", "off") ?: "off")
-        val watchMem = pick(arrayOf("20 catatan", "50 catatan", "96 catatan"), arrayOf("20", "50", "96"), prefs.getString("watchmem", "20") ?: "20")
-        val mini = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("mini", "off") ?: "off")
-        val perch = pick(arrayOf("Mati", "Nyala"), arrayOf("off", "on"), prefs.getString("perch", "off") ?: "off")
-
-        val music = pick(arrayOf("Nyala", "Mati"), arrayOf("on", "off"), prefs.getString("music", "on") ?: "on")
-        fun save() {
-            prefs.edit()
-                .putString("key", key.text.toString().trim())
-                .putString("model", model.text.toString().trim())
-                .putString("nick", nick.text.toString().trim())
-                .putString("lang", picked(lang))
-                .putString("replies", picked(replies))
-                .putString("memory", picked(memory))
-                .putString("voice_mode", picked(voiceMode))
-                .putString("fish_key", fKey.text.toString().trim())
-                .putString("fish_voice", fVoice.text.toString().trim())
-                .putString("eleven_key", eKey.text.toString().trim())
-                .putString("eleven_voice", eVoice.text.toString().trim())
-                .putString("eleven_model", picked(eModel))
-                .putString("eleven_stab", eStab.text.toString().trim())
-                .putString("eleven_sim", eSim.text.toString().trim())
-                .putString("eleven_speed", eSpeed.text.toString().trim())
-                .putString("volume", volume.text.toString().trim())
-                .putString("pitch", picked(pitch))
-                .putString("size", picked(size))
-                .putString("size_pct", (sizeBar.progress + 50).toString())
-                .putString("robot", robotF.text.toString().trim())
-                .putString("glitch", glitchF.text.toString().trim())
-                .putString("hologram", picked(holo))
-                .putString("headpats", picked(headPats))
-                .putString("sleep", picked(sleepSp))
-                .putString("wander", picked(wander))
-                .putString("music", picked(music))
-                .putString("popins", picked(popins))
-                .putString("checkin", picked(checkin))
-                .putString("chaos", picked(chaos))
-                .putString("typingsound", picked(typing))
-                .putString("sounds", sounds.text.toString().trim())
-                .putString("wake", picked(wake))
-                .putString("watch", picked(watch))
-                .putString("watch_every", picked(watchEvery))
-                .putString("bubble", picked(bubble))
-                .putString("followup", picked(followup))
-                .putString("remember", picked(remember))
-                .putString("watchmem", picked(watchMem))
-                .putString("mini", picked(mini))
-                .putString("perch", picked(perch))
-                .apply()
-        }
-
-        // ---------- EFEK & TINGKAH ----------
-        col.addView(header("EFEK & TINGKAH"))
-        col.addView(label("Robot (0-100, efek suara robot)"))
-        col.addView(robotF)
-        col.addView(label("Glitch (0-100, suara sesekali putus)"))
-        col.addView(glitchF)
-        col.addView(label("Hologram (tampilan biru transparan)"))
-        col.addView(holo)
-        col.addView(label("Elus kepala (ketuk bagian atas Capri)"))
-        col.addView(headPats)
-        col.addView(label("Tidur kalau nggak diajak ngobrol"))
-        col.addView(sleepSp)
-        col.addView(label("Jalan-jalan sendiri di layar"))
-        col.addView(wander)
-        col.addView(label("Capri joget kalau ada musik diputar"))
-        col.addView(music)
-
-        col.addView(header("OBROLAN & SUARA TAMBAHAN"))
-        col.addView(label("Capri ngomong duluan (sesekali)"))
-        col.addView(popins)
-        col.addView(label("Check in kalau kamu lama nggak ngobrol (2 jam)"))
-        col.addView(checkin)
-        col.addView(label("Chaos (kadang glitch sendiri)"))
-        col.addView(chaos)
-        col.addView(label("Bunyi saat mengetik"))
-        col.addView(typing)
-        col.addView(label("Volume bunyi efek (0-100)"))
-        col.addView(sounds)
-        col.addView(label("Panggil Capri pakai suara (mic nyala terus, boros baterai)"))
-        col.addView(wake)
-
-        col.addView(header("LIHAT LAYAR"))
-        col.addView(label("Capri lihat layar kamu saat kamu kirim pesan (gambar cuma disimpan sementara di HP)"))
-        col.addView(watch)
-        col.addView(label("Perbarui gambar tiap"))
-        col.addView(watchEvery)
-        val startScreen = Button(this).apply {
-            text = "Mulai lihat layar (Android minta izin)"
-            setOnClickListener {
-                save()
-                val mpm = getSystemService(android.media.projection.MediaProjectionManager::class.java)
-                startActivityForResult(mpm.createScreenCaptureIntent(), 42)
+            letterSpacing = 0.08f
+            setTextColor(cy)
+            post {
+                paint.shader = LinearGradient(0f, 0f, width.toFloat().coerceAtLeast(1f), 0f, cy, pk, Shader.TileMode.CLAMP)
+                invalidate()
             }
         }
-        val stopScreen = Button(this).apply {
-            text = "Stop lihat layar"
-            setOnClickListener { startService(Intent(this@MainActivity, CapriService::class.java).setAction("screen_stop")) }
-        }
-        col.addView(startScreen)
-        col.addView(stopScreen)
-        col.addView(logButton())
-
-        col.addView(header("TAMPILAN & INGATAN"))
-        col.addView(label("Gelembung bicara (berapa lama muncul)"))
-        col.addView(bubble)
-        col.addView(label("Lanjut ngomong sendiri setelah jawaban (30 detik)"))
-        col.addView(followup)
-        col.addView(label("Ingat apa yang dilihat dari layar (tiap menit, perlu Lihat layar nyala)"))
-        col.addView(remember)
-        col.addView(label("Jumlah catatan layar yang diingat"))
-        col.addView(watchMem)
-        col.addView(label("Mode mini (tombol chat cuma kirim dan tutup)"))
-        col.addView(mini)
-        col.addView(label("Duduk di tepi bawah layar (bukan jalan-jalan)"))
-        col.addView(perch)
-        col.addView(header("BANTUAN"))
-        val help = Button(this).apply {
-            text = "Bantuan (buka panduan)"
-            setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lachydotmcg/capri-desktop#readme"))) }
-        }
-        val updates = Button(this).apply {
-            text = "Cek update"
-            setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lachydotmcg/capri-desktop/releases"))) }
-        }
-        val support = Button(this).apply {
-            text = "Dukung proyek Capri"
-            setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lachydotmcg/capri-desktop"))) }
-        }
-        col.addView(help)
-        col.addView(updates)
-        col.addView(support)
-
-        // ---------- TOMBOL ----------
-        val overlay = Button(this).apply {
-            text = "1. Izinkan tampil di atas app lain"
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            }
-        }
-        val start = Button(this).apply {
-            text = "2. Mulai Capri"
-            tag = "primary"
-            setOnClickListener {
-                save()
-                AppLog.add("APP", "Mulai Capri ditekan (mik=${checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED}, overlay=${Settings.canDrawOverlays(this@MainActivity)})")
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    askPermissions()
-                    Toast.makeText(this@MainActivity, "Izinkan mikrofon dulu, lalu tekan Mulai lagi.", Toast.LENGTH_LONG).show()
-                } else if (!Settings.canDrawOverlays(this@MainActivity)) {
-                    Toast.makeText(this@MainActivity, "Izinkan tampil di atas app lain dulu (tombol 1).", Toast.LENGTH_LONG).show()
-                } else {
-                    stopService(Intent(this@MainActivity, CapriService::class.java))
-                    startForegroundService(Intent(this@MainActivity, CapriService::class.java))
-                }
-            }
-        }
-        val stop = Button(this).apply {
-            text = "Hentikan Capri"
-            setOnClickListener { stopService(Intent(this@MainActivity, CapriService::class.java)) }
-        }
-        val wipe = Button(this).apply {
-            text = "Hapus ingatan chat"
-            setOnClickListener {
-                Brain.clear(this@MainActivity)
-                Toast.makeText(this@MainActivity, "Ingatan Capri dihapus.", Toast.LENGTH_SHORT).show()
-            }
-        }
-        val credit = TextView(this).apply {
+        val subtitle = TextView(this).apply {
+            text = "// build ${AppLog.BUILD} · Android ${Build.VERSION.RELEASE}"
+            setTextColor(muted)
             textSize = 11f
-            setPadding(0, pad, 0, 0)
+        }
+        titleBox.addView(title)
+        titleBox.addView(subtitle)
+        hero.addView(icon, LinearLayout.LayoutParams(dp(56), dp(56)))
+        hero.addView(titleBox)
+        col.addView(hero)
+
+        // ----- Kontrol utama -----
+        val main = card("KONTROL UTAMA", "Mulai, hentikan, dan cek log", cy)
+        button(main, "▶  Mulai Capri", primary = true) { startCapri() }
+        button(main, "■  Hentikan Capri") { stopService(Intent(this, CapriService::class.java)) }
+        button(main, "Lihat log (untuk cek error)") { startActivity(Intent(this, LogActivity::class.java)) }
+
+        // ----- Izin dan kontrol HP -----
+        val perm = card("IZIN & KONTROL HP", "Titik hijau = sudah aktif", lm)
+        statusRow(perm, "Tampil di atas app lain", { Settings.canDrawOverlays(this) }, "Atur") {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        }
+        statusRow(perm, "Mikrofon", { hasMic() }, "Izinkan") { askPermissions() }
+        statusRow(perm, "Kontrol HP (Aksesibilitas)", { CapriAccess.instance != null }, "Buka") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+        note(perm, "Kontrol HP: Capri bisa buka app, gulir layar, ketuk teks, kembali, dan beranda. Nyalakan \"Capri Mobile\" di Aksesibilitas. Di Android 13, kalau ditolak: Info app > menu ⋮ > Izinkan setelan terbatas.")
+        toggle(perm, "Izinkan Capri mengontrol HP", "control", true)
+        note(perm, "Perintah di chat: \"buka Spotify\", \"scroll ke bawah\", \"klik Kirim\", \"kembali\", \"home\", \"recent\", \"notifikasi\".")
+
+        // ----- Otak -----
+        val brain = card("OTAK", "Model dan gaya bicara", cy)
+        textField(brain, "API key NVIDIA (gratis di build.nvidia.com)", "key", "nvapi-...", true)
+        textField(brain, "Model otak", "model", Brain.DEFAULT_MODEL, false, Brain.DEFAULT_MODEL)
+        choice(brain, "Bahasa Capri", "lang", arrayOf("Bahasa Indonesia", "English", "Ikut bahasa kamu"), arrayOf("id", "en", "auto"), "id")
+        slider(
+            brain, "Panjang jawaban", "replies", 0, 2, 0, cy,
+            fmt = { listOf("Pendek", "Normal", "Panjang")[it] },
+            load = { s -> when (s) { "short" -> 0; "normal" -> 1; "long" -> 2; else -> null } },
+            store = { listOf("short", "normal", "long")[it] }
+        )
+        slider(brain, "Ingatan chat", "memory", 4, 60, Cfg.MEMORY, cy, fmt = { "$it pesan" })
+        textField(brain, "Capri manggil kamu apa?", "nick", "mis. brezze (boleh kosong)", false)
+
+        // ----- Keaktifan -----
+        val act = card("KEAKTIFAN", "Pasif = diam kecuali diajak ngobrol. Makin tinggi, makin sering Capri ngomong sendiri.", pk)
+        slider(
+            act, "Tingkat keaktifan", "activity", 0, 100, Cfg.ACTIVITY, pk,
+            fmt = {
+                val label = when {
+                    it == 0 -> "Pasif"
+                    it < 35 -> "Santai"
+                    it < 70 -> "Aktif"
+                    else -> "Super aktif"
+                }
+                "$label ($it)"
+            }
+        )
+        toggle(act, "Tanya kabar kalau lama nggak ngobrol", "checkin", false)
+        toggle(act, "Komentari layar sendiri (perlu Lihat layar)", "screencomment", true)
+        toggle(act, "Lanjut ngomong setelah jawaban", "followup", false)
+        toggle(act, "Chaos: kadang glitch atau joget sendiri", "chaos", false)
+        toggle(act, "Joget kalau ada musik diputar", "music", true)
+        toggle(act, "Not musik dan bunyi note block", "music_notes", true)
+        toggle(act, "Panggil \"Capri\" pakai suara (mik nyala terus)", "wake", false)
+
+        // ----- Suara -----
+        val vc = card("SUARA", "Cloud memutar kalimat pertama lebih dulu supaya jedanya pendek", pu)
+        choice(vc, "Sumber suara", "voice_mode", arrayOf("Mati (teks saja)", "Suara HP", "ElevenLabs", "Fish Audio"), arrayOf("off", "phone", "cloud", "fish"), "cloud")
+        toggle(vc, "Teks muncul bareng suara", "voice_sync", true)
+        textField(vc, "Fish Audio API key", "fish_key", "Fish Audio API key", true)
+        textField(vc, "Voice ID Fish Audio", "fish_voice", "Voice ID", false)
+        textField(vc, "ElevenLabs API key", "eleven_key", "sk_...", true)
+        textField(vc, "Voice ID ElevenLabs", "eleven_voice", "Voice ID", false)
+        choice(vc, "Model ElevenLabs", "eleven_model", arrayOf("Default (eleven_v4_turbo)", "Flash v2.5 (lebih cepat)", "Multilingual v2"), arrayOf("eleven_v4_turbo", "eleven_flash_v2_5", "eleven_multilingual_v2"), "eleven_v4_turbo")
+        val pct = { s: String? -> s?.toFloatOrNull()?.let { (it * 100).roundToInt() } }
+        val frac = { v: Int -> String.format(Locale.US, "%.2f", v / 100f) }
+        slider(vc, "Stability (kecil = ekspresif)", "eleven_stab", 0, 100, Cfg.STAB, pu, fmt = { String.format(Locale.US, "%.2f", it / 100f) }, load = pct, store = frac)
+        slider(vc, "Similarity", "eleven_sim", 0, 100, Cfg.SIM, pu, fmt = { String.format(Locale.US, "%.2f", it / 100f) }, load = pct, store = frac)
+        slider(vc, "Kecepatan bicara", "eleven_speed", 70, 120, Cfg.SPEED, pu, fmt = { String.format(Locale.US, "%.2fx", it / 100f) }, load = pct, store = frac)
+        slider(vc, "Volume", "volume", 0, 150, Cfg.VOLUME, pu, fmt = { "$it%" })
+        slider(vc, "Pitch (suara HP)", "pitch_pct", 50, 160, Cfg.PITCH, pu, fmt = { "$it%" })
+
+        // ----- Efek suara -----
+        val fx = card("EFEK SUARA", "Dikit-dikit aja biar nggak datar", ye)
+        slider(fx, "Robot", "robot", 0, 100, Cfg.ROBOT, ye, fmt = { if (it == 0) "Mati" else "$it%" })
+        slider(fx, "Glitch suara", "glitch", 0, 100, Cfg.GLITCH, ye, fmt = { if (it == 0) "Mati" else "$it%" })
+        slider(fx, "Volume bunyi efek", "sounds", 0, 100, Cfg.SOUNDS, ye, fmt = { "$it%" })
+        toggle(fx, "Bunyi saat mengetik", "typingsound", false)
+
+        // ----- Tampilan dan gerak -----
+        val look = card("TAMPILAN & GERAK", "Ukuran, cara duduk, dan tingkah Capri", lm)
+        slider(look, "Ukuran Capri (Mulai ulang untuk menerapkan)", "size_pct", 50, 150, Cfg.SIZE, lm, fmt = { "$it%" })
+        slider(look, "Tidur kalau nggak diajak ngobrol", "sleep", 0, 30, 0, lm, fmt = { if (it == 0) "Mati" else "$it menit" })
+        slider(look, "Gelembung bicara tampil", "bubble_sec", 3, 40, Cfg.BUBBLE_SEC, lm, fmt = { "$it detik" })
+        toggle(look, "Hologram", "hologram", false)
+        toggle(look, "Elus kepala (ketuk bagian atas Capri)", "headpats", true)
+        toggle(look, "Jalan-jalan sendiri di layar", "wander", false)
+        toggle(look, "Duduk di tepi bawah layar", "perch", false)
+        toggle(look, "Mode mini (chat cuma kirim dan tutup)", "mini", false)
+        note(look, "Saat chat terbuka, Capri duduk di atas panel. Seret Capri untuk mengatur tempat duduknya, dan seret bagian atas panel untuk memindahkan panelnya.")
+        button(look, "Reset posisi duduk dan panel") {
+            for (k in listOf("perch_dx", "perch_dy", "panel_x", "panel_y")) Cfg.prefs(this).edit().remove(k).apply()
+            Toast.makeText(this, "Posisi direset.", Toast.LENGTH_SHORT).show()
+        }
+
+        // ----- Lihat layar -----
+        val scr = card("LIHAT LAYAR", "Gambar layar terbaru hanya dikirim ke otak saat kamu kirim pesan", cy)
+        toggle(scr, "Capri lihat layar kamu", "watch", false)
+        toggle(scr, "Ingat apa yang dilihat (tiap menit)", "remember", false)
+        slider(scr, "Jumlah catatan layar yang diingat", "watchmem", 10, 96, Cfg.WATCHMEM, cy, fmt = { "$it catatan" })
+        button(scr, "Mulai lihat layar (Android minta izin)", primary = true) {
+            val mpm = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+            startActivityForResult(mpm.createScreenCaptureIntent(), 42)
+        }
+        button(scr, "Stop lihat layar") {
+            startService(Intent(this, CapriService::class.java).setAction("screen_stop"))
+        }
+
+        // ----- Bantuan -----
+        val help = card("BANTUAN", "", muted)
+        button(help, "Hapus ingatan chat", danger = true) {
+            Brain.clear(this)
+            Toast.makeText(this, "Ingatan Capri dihapus.", Toast.LENGTH_SHORT).show()
+        }
+        button(help, "Bantuan (buka panduan)") {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lachydotmcg/capri-desktop#readme")))
+        }
+        button(help, "Cek update") {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lachydotmcg/capri-desktop/releases")))
+        }
+        button(help, "Dukung proyek Capri") {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lachydotmcg/capri-desktop")))
+        }
+
+        col.addView(TextView(this).apply {
+            textSize = 11f
+            setTextColor(muted)
+            setPadding(0, dp(18), 0, 0)
             text = "Karakter, sprite, dan persona berasal dari proyek Capri (github.com/lachydotmcg/capri-desktop), " +
                 "© 2026 Lachy, lisensi PolyForm Noncommercial 1.0.0. Seni dan animasi oleh artisnya Capri. " +
                 "Proyek fan-made nonkomersial, bukan produk resmi CD PROJEKT RED."
-        }
+        })
 
-        col.addView(overlay)
-        col.addView(start)
-        col.addView(stop)
-        col.addView(logButton())
-        col.addView(wipe)
-        credit.tag = "c"
-        col.addView(credit)
-        col.setBackgroundColor(0xFF0D1117.toInt())
-        neon(col)
         setContentView(ScrollView(this).apply {
-            setBackgroundColor(0xFF0D1117.toInt())
+            setBackgroundColor(bg)
             addView(col)
         })
+        for (r in refreshers) r()
     }
 }

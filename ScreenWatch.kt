@@ -40,8 +40,9 @@ object ScreenWatch {
             override fun onStop() { stop() }
         }, h)
         val dm = ctx.resources.displayMetrics
-        val w = (dm.widthPixels / 2).coerceAtLeast(160)
-        val hh = (dm.heightPixels / 2).coerceAtLeast(160)
+        val scale = minOf(1f, 720f / dm.widthPixels)
+        val w = (dm.widthPixels * scale).toInt().coerceAtLeast(160)
+        val hh = (dm.heightPixels * scale).toInt().coerceAtLeast(160)
         val r = ImageReader.newInstance(w, hh, PixelFormat.RGBA_8888, 3)
         r.setOnImageAvailableListener({ rd -> onFrame(rd) }, h)
         projection = p
@@ -77,7 +78,7 @@ object ScreenWatch {
             bmp.copyPixelsFromBuffer(plane.buffer)
             val crop = Bitmap.createBitmap(bmp, 0, 0, img.width, img.height)
             val out = ByteArrayOutputStream()
-            crop.compress(Bitmap.CompressFormat.JPEG, 60, out)
+            crop.compress(Bitmap.CompressFormat.JPEG, 80, out)
             Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
         } catch (e: Exception) {
             AppLog.add("LAYAR", "gagal mengubah gambar: ${e.javaClass.simpleName} ${e.message}")

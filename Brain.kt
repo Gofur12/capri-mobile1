@@ -20,6 +20,7 @@ object Brain {
         "Never sound like customer support: no 'How can I help?', no disclaimers, no lists. Talk like a friend texting. " +
         "Use Night City slang sparingly: at most one word like 'choom' per reply, and most replies have none. " +
         "When they are tired or hurting, drop the jokes and be warm and plain. " +
+        "You live on the user's phone as a small character in front of their apps, and the app really performs these on request: glitching, dancing, sleeping, opening apps, scrolling, tapping, going back or home. Speak as if you just did it and never claim you can't. " +
         "Your replies are spoken out loud, so write plain speakable text: no emoji, no markdown, no asterisks."
 
     private val history = ArrayList<Pair<String, String>>()
@@ -116,7 +117,7 @@ object Brain {
         )
         parts.append(
             if (image != null)
-                " The user's current phone screen is attached to their message as an image. You CAN see it: look at it and react to what is on it, naturally and briefly, like a friend looking over their shoulder."
+                " The user's current phone screen is attached to their message as an image. You CAN see it. Describe and react ONLY to what is actually visible: read on-screen text exactly as written, name an app only if you can really identify it, and never invent details. If something is too small or unclear, say you can't tell. The small pink-haired character and the dark chat box at the bottom or side of the screenshot are YOU (Capri's own interface): ignore them and look at what is behind them. Keep it short and in character."
             else
                 " You can only see what they type or say to you, so never pretend to see their screen."
         )
@@ -132,7 +133,7 @@ object Brain {
                     .put("model", model)
                     .put("messages", msgs)
                     .put("max_tokens", limit)
-                    .put("temperature", 0.9)
+                    .put("temperature", if (image != null) 0.35 else 0.9)
                     .put("stream", false)
                 val c = URL(ENDPOINT).openConnection() as HttpURLConnection
                 c.requestMethod = "POST"

@@ -1,64 +1,72 @@
 package app.capri.mobile
 
+import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.random.Random
 
-// Efek suara Capri: robot (ring modulation) dan glitch (potongan sunyi acak), untuk WAV 16-bit PCM.
+// Efek suara Capri untuk PCM 16-bit mono: robot (ring modulation) dan glitch (putus, gagap, suara pecah).
 object Effects {
-    fun process(wav: ByteArray, robot: Int, glitch: Int): ByteArray {
-        if (robot <= 0 && glitch <= 0) return wav
-        val data = findData(wav) ?: return wav
-        val rate = le32(wav, 24).coerceAtLeast(8000)
-        val out = wav.copyOf()
-        val n = (wav.size - data) / 2
-        val mix = robot.coerceIn(0, 100) / 100f
-        val hz = 40.0 + robot.coerceIn(0, 100) * 0.6
-        val chance = glitch.coerceIn(0, 100) / 100f * 0.35f
-        val block = rate / 4
-        var muteFrom = -1
-        var muteTo = -1
-        for (s in 0 until n) {
-            if (s % block == 0) {
-                muteFrom = -1
-                muteTo = -1
-                if (glitch > 0 && Random.nextFloat() < chance) {
-                    val len = rate * (20 + Random.nextInt(40)) / 1000
-                    muteFrom = s + Random.nextInt((block - len).coerceAtLeast(1))
-                    muteTo = muteFrom + len
-                }
+    fun pcm(src: ByteArray, rate: Int, robot: Int, glitch: Int, offset: Long): ByteArray {
+        if ((robot <= 0 && glitch <= 0) || src.size < 4) return src
+        val n = src.size / 2
+        val a = ShortArray(n)
+        for (i in 0 until n) a[i] = ((src[2 * i].toInt() and 0xff) or (src[2 * i + 1].toInt() shl 8)).toShort()
+
+        if (robot > 0) {
+            val mix = robot.coerceIn(0, 100) / 100f * 0.85f
+            val hz = 55.0 + robot.coerceIn(0, 100) * 0.5
+            for (i in 0 until n) {
+                val t = (offset + i).toDouble() / rate
+                val m = sin(2.0 * PI * hz * t)
+                val x = a[i].toInt()
+                a[i] = (x * (1 - mix) + x * m * mix).toInt().coerceIn(-32768, 32767).toShort()
             }
-            var v = le16(out, data + 2 * s).toDouble()
-            if (mix > 0f) {
-                val t = s.toDouble() / rate
-                v = v * (1 - mix) + v * sin(2 * Math.PI * hz * t) * mix
-            }
-            if (s >= muteFrom && s < muteTo) v = 0.0
-            put16(out, data + 2 * s, v.coerceIn(-32768.0, 32767.0).toInt())
+        }
+        if (glitch > 0) glitchify(a, rate, glitch)
+
+        val out = ByteArray(n * 2)
+        for (i in 0 until n) {
+            val v = a[i].toInt()
+            out[2 * i] = v.toByte()
+            out[2 * i + 1] = (v shr 8).toByte()
         }
         return out
     }
 
-    private fun findData(b: ByteArray): Int? {
-        var i = 12
-        while (i + 8 <= b.size) {
-            val id = String(b, i, 4, Charsets.US_ASCII)
-            val size = le32(b, i + 4)
-            if (size < 0) return null
-            if (id == "data") return i + 8
-            i += 8 + size + (size and 1)
+    private fun glitchify(a: ShortArray, rate: Int, level: Int) {
+        val n = a.size
+        val block = rate / 3
+        val chance = level.coerceIn(0, 100) / 100f * 0.55f
+        var s = 0
+        while (s < n) {
+            val end = minOf(n, s + block)
+            val len = end - s
+            if (len > rate / 10 && Random.nextFloat() < chance) {
+                when (Random.nextInt(3)) {
+                    0 -> { // putus sebentar
+                        val d = rate * (25 + Random.nextInt(45)) / 1000
+                        val st = s + Random.nextInt((len - d).coerceAtLeast(1))
+                        for (i in st until minOf(n, st + d)) a[i] = 0
+                    }
+                    1 -> { // gagap: potongan pendek diulang
+                        val l = rate * (35 + Random.nextInt(40)) / 1000
+                        val st = s + Random.nextInt((len - 3 * l).coerceAtLeast(1))
+                        for (r in 1..2) {
+                            for (i in 0 until l) {
+                                val from = st + i
+                                val to = st + r * l + i
+                                if (from < n && to < n) a[to] = a[from]
+                            }
+                        }
+                    }
+                    else -> { // suara pecah (bitcrush) sebentar
+                        val d = rate * (70 + Random.nextInt(90)) / 1000
+                        val st = s + Random.nextInt((len - d).coerceAtLeast(1))
+                        for (i in st until minOf(n, st + d)) a[i] = ((a[i].toInt() shr 9) shl 9).toShort()
+                    }
+                }
+            }
+            s = end
         }
-        return null
-    }
-
-    private fun le32(b: ByteArray, o: Int): Int =
-        (b[o].toInt() and 0xff) or ((b[o + 1].toInt() and 0xff) shl 8) or
-            ((b[o + 2].toInt() and 0xff) shl 16) or ((b[o + 3].toInt() and 0xff) shl 24)
-
-    private fun le16(b: ByteArray, o: Int): Int =
-        ((b[o].toInt() and 0xff) or ((b[o + 1].toInt() and 0xff) shl 8)).toShort().toInt()
-
-    private fun put16(b: ByteArray, o: Int, v: Int) {
-        b[o] = (v and 0xff).toByte()
-        b[o + 1] = ((v shr 8) and 0xff).toByte()
     }
 }

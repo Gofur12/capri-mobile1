@@ -1,23 +1,27 @@
 package app.capri.mobile
 
 import android.Manifest
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.Notification
-import android.app.PendingIntent
-import android.graphics.drawable.Icon
-import android.media.AudioManager
-import android.media.ToneGenerator
-import android.text.TextWatcher
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -28,33 +32,46 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
+import android.text.Editable
+import android.text.SpannableStringBuilder
+import android.text.TextWatcher
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
-import android.view.View
 import android.view.MotionEvent
+import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.abs
+import kotlin.random.Random
 
-// Capri melayang di atas app lain. Ketuk = buka/tutup chat, tahan lalu geser = pindah.
-// Suara: Capri bicara lewat Text-to-Speech Android dan mendengar lewat pengenal suara Google.
 private const val POP_INSTR = "Say one short unprompted line right now, in character: a greeting, a tease, or a random thought. Under 15 words. Do not ask a question."
 private const val CHECK_INSTR = "The user hasn't talked to you in a while. Check in on them warmly in one short sentence, in character. Ask at most one question."
 private const val FOLLOW_INSTR = "Add one short follow-up line to what you just said, in character, like a friend who thought of one more thing. Under 15 words. Do not ask a question."
 private const val REMEMBER_INSTR = "Describe in one short English sentence what the user is doing on screen right now. Only describe, no greeting."
+private const val SCREEN_INSTR = "React to what is on the user's screen right now in one short sentence, in character. Mention only what you can actually see; if you cannot tell, say something else short."
+private const val MUSIC_INSTR = "Music just started playing on the user's phone. React in one short line, in character, without asking a question."
 
+private val CY = 0xFF05D9E8.toInt()
+private val PK = 0xFFFF2A6D.toInt()
+
+// Capri melayang di atas app lain. Ketuk = buka/tutup chat, tahan lalu geser = pindah.
 class CapriService : Service() {
     private lateinit var wm: WindowManager
     private var pet: SpriteView? = null
+    private var petLp: WindowManager.LayoutParams? = null
+    private var petKey = ""
     private var panel: LinearLayout? = null
+    private var panelLp: WindowManager.LayoutParams? = null
     private var reply: TextView? = null
     private var input: EditText? = null
     private var micBtn: Button? = null
@@ -66,25 +83,45 @@ class CapriService : Service() {
     private var listening = false
     private var callMode = false
     private var lastReply = ""
-    private var player: android.media.MediaPlayer? = null
+    private var lastUser: String? = null
+    private val voice = VoicePlayer()
     private val ui = Handler(Looper.getMainLooper())
 
+    private var sleeping = false
+    private var musicOn = false
+    private var perched = false
+    private var speaking = false
+    private var hidden = false
+    private var dragActive = false
+    private var longFired = false
+    private var preX = 0
+    private var preY = 0
+    private var perchDx = 0
+    private var perchDy = 0
+    private var glitchBoostUntil = 0L
+    private var lastTalk = System.currentTimeMillis()
+    private var lastProactive = 0L
+    private var lastCheckin = 0L
+    private var lastRemember = 0L
+    private var bubble: TextView? = null
+    private val screenLines = ArrayList<String>()
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    private fun prefs(): SharedPreferences = getSharedPreferences("capri", Context.MODE_PRIVATE)
-    private fun robotLevel() = prefs().getString("robot", "0")?.toIntOrNull() ?: 0
-    private fun glitchLevel() = prefs().getString("glitch", "0")?.toIntOrNull() ?: 0
-    private fun wanderOn() = prefs().getString("wander", "off") == "on"
-    private fun headPatsOn() = prefs().getString("headpats", "on") == "on"
-    private fun voiceOn() = prefs().getBoolean("voice", true) && prefs().getString("voice_mode", "cloud") != "off"
-    private fun volumeLevel(): Float = ((prefs().getString("volume", "100")?.toIntOrNull() ?: 100) / 100f).coerceIn(0f, 1f)
-    private fun speedValue(): Float = (prefs().getString("eleven_speed", "")?.toFloatOrNull() ?: 1.0f).coerceIn(0.7f, 1.2f)
-    private fun pitchValue(): Float = when (prefs().getString("pitch", "normal")) {
-        "low" -> 0.85f
-        "high" -> 1.3f
-        else -> 1.0f
+    private fun pi(key: String, def: Int) = Cfg.int(this, key, def)
+    private fun po(key: String, def: Boolean) = Cfg.on(this, key, def)
+    private fun ps(key: String, def: String) = Cfg.str(this, key, def)
+    private fun voiceOn() = Cfg.prefs(this).getBoolean("voice", true) && ps("voice_mode", "cloud") != "off"
+    private fun robotLevel() = pi("robot", Cfg.ROBOT)
+    private fun glitchLevel(): Int {
+        val base = pi("glitch", Cfg.GLITCH)
+        return if (System.currentTimeMillis() < glitchBoostUntil) maxOf(base, 70) else base
     }
-    private fun petWidthDp(): Int =
-        (90 * (prefs().getString("size_pct", "100")?.toIntOrNull() ?: 100) / 100).coerceIn(50, 180)
+    private fun volumeGain(): Float = (pi("volume", Cfg.VOLUME) / 100f).coerceIn(0f, 1.5f)
+    private fun speedValue(): Float = Cfg.float(this, "eleven_speed", 1.0f).coerceIn(0.7f, 1.2f)
+    private fun pitchValue(): Float = (pi("pitch_pct", Cfg.PITCH) / 100f).coerceIn(0.5f, 1.6f)
+    private fun petWidthDp(): Int = (90 * pi("size_pct", Cfg.SIZE) / 100).coerceIn(45, 180)
+    private fun edgeSit() = po("perch", false)
+    private fun activity() = pi("activity", Cfg.ACTIVITY).coerceIn(0, 100)
 
     override fun onBind(i: Intent?): IBinder? = null
 
@@ -98,7 +135,14 @@ class CapriService : Service() {
                 tts?.setPitch(1.15f)
                 tts?.setSpeechRate(1.05f)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(id: String?) { ui.post { pet?.talk(lastReply, true) } }
+                    override fun onStart(id: String?) {
+                        ui.post {
+                            speaking = true
+                            pet?.ambientGlitch = glitchLevel()
+                            pet?.talk(lastReply, true)
+                            applyRest()
+                        }
+                    }
                     override fun onDone(id: String?) { ui.post { spoke() } }
                     @Deprecated("Deprecated in Java")
                     override fun onError(id: String?) { ui.post { spoke() } }
@@ -112,7 +156,7 @@ class CapriService : Service() {
         AppLog.add("LAYANAN", "onStartCommand aksi=${i?.action ?: "-"}")
         if (i?.action == "screen_start") ScreenWatch.wanted = true
         startAsForeground()
-        val key = (prefs().getString("size_pct", "100") ?: "100") + "|" + (prefs().getString("perch", "off") ?: "off")
+        val key = pi("size_pct", Cfg.SIZE).toString() + "|" + ps("perch", "off")
         if (pet != null && petKey != key) {
             try { wm.removeView(pet!!) } catch (_: Exception) {}
             pet = null
@@ -132,9 +176,8 @@ class CapriService : Service() {
                     i?.getParcelableExtra("data", Intent::class.java)
                 else i?.getParcelableExtra("data")
                 if (data != null) {
-                    val every = (prefs().getString("watch_every", "10")?.toLongOrNull() ?: 10L) * 1000L
                     try {
-                        ScreenWatch.start(this, code, data, every)
+                        ScreenWatch.start(this, code, data, 0L)
                         AppLog.add("LAYAR", "ScreenWatch.start selesai")
                     } catch (e: Exception) {
                         ScreenWatch.wanted = false
@@ -192,157 +235,12 @@ class CapriService : Service() {
         }
     }
 
-    private var petLp: WindowManager.LayoutParams? = null
-    private var petKey = ""
-    private var lastTalk = System.currentTimeMillis()
-    private var lastProactive = 0L
-    private var lastCheckin = 0L
-    private var hidden = false
+    // ---------- Animasi dan keadaan ----------
 
-    private val proactiveRun = object : Runnable {
-        override fun run() {
-            val now = System.currentTimeMillis()
-            val p = prefs()
-            if (panel == null && pet != null) {
-                val gap = when (p.getString("popins", "off")) { "rare" -> 45L; "often" -> 15L; else -> 0L }
-                if (gap > 0 && now - lastProactive > gap * 60_000L) {
-                    lastProactive = now
-                    proactive(POP_INSTR)
-                }
-                if (p.getString("checkin", "off") == "on" && now - lastTalk > 2 * 3_600_000L && now - lastCheckin > 2 * 3_600_000L) {
-                    lastCheckin = now
-                    lastTalk = now
-                    proactive(CHECK_INSTR)
-                }
-                val r = kotlin.random.Random.nextFloat()
-                if (p.getString("chaos", "off") == "on" && r < 0.05f) pet?.play(if (r < 0.025f) "glitch" else "dance", loop = false)
-                rememberScreen(now)
-            }
-            ui.postDelayed(this, 60_000L)
-        }
-    }
-    private var dragActive = false
-    private var longFired = false
-
-    private val longPressRun = Runnable {
-        longFired = true
-        bringHere()
-    }
-    private val screenLines = ArrayList<String>()
-    private var lastRemember = 0L
-    private var bubble: TextView? = null
-    private val bubbleHide = Runnable { removeBubble() }
-    private val followRun = Runnable { proactive(FOLLOW_INSTR) }
-
-    // "buka Spotify" / "open Spotify": Capri membuka app yang namanya cocok di HP ini.
-    private fun handleOpenApp(text: String): Boolean {
-        val lower = text.trim().lowercase()
-        val prefix = listOf("buka ", "bukain ", "open ", "nyalain ").firstOrNull { lower.startsWith(it) } ?: return false
-        val query = lower.removePrefix(prefix).trim().removeSuffix(" dong").removeSuffix(" ya").trim()
-        if (query.isEmpty()) return false
-        val pm = packageManager
-        val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
-        val hit = apps.firstOrNull { it.loadLabel(pm).toString().lowercase() == query }
-            ?: apps.firstOrNull { it.loadLabel(pm).toString().lowercase().contains(query) }
-        val msg = if (hit == null) {
-            "Nggak nemu app \"$query\" di HP ini."
-        } else {
-            val name = hit.loadLabel(pm).toString()
-            val launch = pm.getLaunchIntentForPackage(hit.activityInfo.packageName)
-            if (launch != null) {
-                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(launch)
-                "Oke, aku bukain $name."
-            } else {
-                "App $name nggak bisa dibuka dari sini."
-            }
-        }
-        lastReply = msg
-        say(msg)
-        showBubble(msg)
-        speak(msg)
-        return true
-    }
-
-    private fun removeBubble() {
-        bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        bubble = null
-    }
-
-    private fun showBubble(msg: String) {
-        if (panel != null) return // saat chat terbuka, jawaban sudah tampil di panel
-        val base = petLp ?: return
-        if (pet == null) return
-        removeBubble()
-        val tv = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-            maxWidth = dp(230)
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#F2101820"))
-                setStroke(dp(2), Color.parseColor("#05D9E8"))
-                cornerRadius = dp(8).toFloat()
-            }
-            text = msg
-        }
-        val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            PixelFormat.TRANSLUCENT
-        )
-        lp.gravity = Gravity.TOP or Gravity.START
-        lp.x = base.x.coerceIn(0, (resources.displayMetrics.widthPixels - dp(240)).coerceAtLeast(0))
-        lp.y = (base.y - dp(90)).coerceAtLeast(dp(20))
-        try {
-            wm.addView(tv, lp)
-            bubble = tv
-        } catch (_: Exception) {
-            return
-        }
-        val ms = when (prefs().getString("bubble", "normal")) {
-            "quick" -> 6000L
-            "long" -> 25000L
-            else -> 12000L
-        }
-        ui.removeCallbacks(bubbleHide)
-        ui.postDelayed(bubbleHide, ms)
-    }
-
-    // Tiap menit, kalau layar dibagikan: Capri catat apa yang sedang dilihat, untuk ingatan obrolan.
-    private fun rememberScreen(now: Long) {
-        val p = prefs()
-        if (p.getString("remember", "off") != "on" || p.getString("watch", "off") != "on") return
-        if (now - lastRemember < 60_000L) return
-        val img = ScreenWatch.freshB64(90_000L) ?: return
-        lastRemember = now
-        val key = (p.getString("key", "") ?: "").trim()
-        if (key.isEmpty()) return
-        val model = (p.getString("model", "") ?: "").trim().ifEmpty { Brain.DEFAULT_MODEL }
-        val memory = p.getString("memory", "20")?.toIntOrNull() ?: 20
-        val max = p.getString("watchmem", "20")?.toIntOrNull() ?: 20
-        thread {
-            val line = Brain.ask(key, model, REMEMBER_INSTR, "", "en", "short", memory, true, img, "")
-            if (line.isBlank() || Brain.isError(line)) return@thread
-            synchronized(screenLines) {
-                screenLines.add(line.take(160))
-                while (screenLines.size > max) screenLines.removeAt(0)
-            }
-        }
-    }
-
-    private var sleeping = false
-    private var musicOn = false
-    private var perched = false
-    private var preX = 0
-    private var preY = 0
-
-    private fun edgeSit() = prefs().getString("perch", "off") == "on"
-
-    // Animasi "diam" Capri sesuai keadaan: tidur, duduk (di panel chat atau tepi), joget kalau ada musik, atau berdiri.
+    // Animasi "diam" Capri sesuai keadaan: tidur, duduk (panel chat atau tepi), joget kalau ada musik, atau berdiri.
     private fun restClip(): String = when {
         sleeping -> "sleep"
+        (perched || edgeSit()) && speaking -> "perch_talk"
         perched || edgeSit() -> if (musicOn) "perch_music" else "perch"
         musicOn -> "dance"
         else -> "idle"
@@ -361,33 +259,88 @@ class CapriService : Service() {
         }
     }
 
-    // Cek tiap 3 detik apakah ada musik dari app lain. Suara Capri sendiri tidak dihitung.
-    private val musicRun = object : Runnable {
-        override fun run() {
-            val am = getSystemService(AudioManager::class.java)
-            val busy = player != null || tts?.isSpeaking == true
-            val playing = prefs().getString("music", "on") == "on" && !busy && am.isMusicActive
-            if (playing != musicOn && !dragActive && !sleeping) {
-                musicOn = playing
-                AppLog.add("MUSIK", if (playing) "musik terdeteksi, Capri joget" else "musik berhenti")
-                applyRest()
+    private fun wake() {
+        if (sleeping) { sleeping = false; pet?.rest = restClip(); pet?.play("wake", loop = false) }
+        ui.removeCallbacks(sleepRun)
+        val mins = pi("sleep", 0)
+        if (mins > 0) ui.postDelayed(sleepRun, mins * 60_000L)
+    }
+
+    // Ekspresi sesuai isi balasan.
+    private fun expression(text: String) {
+        val v = pet ?: return
+        val t = text.lowercase()
+        val sit = perched || edgeSit()
+        when {
+            Regex("glitch|static|error|rusak|crash|sinyal").containsMatchIn(t) -> {
+                v.glitchBurst(1400L)
+                v.play(if (sit) "perch_glitch" else "glitch", loop = false)
             }
-            ui.postDelayed(this, 3000L)
+            Regex("haha|hehe|wkwk|lol|hihi|asik|mantap|keren|yay|seru").containsMatchIn(t) || t.trimEnd().endsWith("!") -> {
+                if (!sit && !musicOn && !sleeping) v.play("grin", loop = false)
+            }
         }
     }
 
-    // Capri duduk di tepi atas panel chat, seperti di PC. Posisi diikuti terus (keyboard bisa menggeser panel).
+    // Tingkah kecil saat nganggur: glitch sebentar, nyengir, atau joget.
+    private fun quirk() {
+        val v = pet ?: return
+        if (speaking || sleeping || dragActive || panel != null || hidden) return
+        val r = Random.nextFloat()
+        when {
+            r < 0.5f -> v.glitchBurst(380L)
+            r < 0.8f -> if (!perched && !musicOn && !edgeSit()) v.play("grin", loop = false)
+            else -> if (!musicOn && !edgeSit()) v.play("dance", loop = false)
+        }
+    }
+
+    // Aksi badan dari perintah di chat. Hasilnya tetap diteruskan ke otak supaya Capri menanggapinya.
+    private fun bodyAction(t: String): String? {
+        val l = t.lowercase()
+        return when {
+            Regex("\\bglitch").containsMatchIn(l) -> {
+                pet?.glitchBurst(2200L)
+                glitchBoostUntil = System.currentTimeMillis() + 45_000L
+                "glitch"
+            }
+            Regex("\\b(joget|dance|nari|goyang)").containsMatchIn(l) -> {
+                pet?.play(if (perched || edgeSit()) "perch_music" else "dance")
+                ui.postDelayed({ applyRest() }, 4000L)
+                "joget"
+            }
+            Regex("\\b(tidur|bobo|sleep)\\b").containsMatchIn(l) -> {
+                sleeping = true
+                applyRest()
+                "tidur"
+            }
+            Regex("\\b(bangun|wake up)\\b").containsMatchIn(l) -> "bangun"
+            else -> null
+        }
+    }
+
+    // ---------- Duduk di panel dan posisinya ----------
+
+    private fun perchBase(): Pair<Int, Int>? {
+        val box = panel ?: return null
+        val lp = petLp ?: return null
+        if (box.width <= 0) return null
+        val loc = IntArray(2)
+        box.getLocationOnScreen(loc)
+        val bx = loc[0] + box.width - lp.width - dp(6)
+        val by = (loc[1] - lp.height * 0.66f).toInt()
+        return Pair(bx, by)
+    }
+
     private val perchRun = object : Runnable {
         override fun run() {
-            val box = panel
             val lp = petLp
             val v = pet
-            if (box != null && lp != null && v != null) {
-                if (!dragActive && box.width > 0) {
-                    val loc = IntArray(2)
-                    box.getLocationOnScreen(loc)
-                    val tx = (loc[0] + box.width - lp.width - dp(6)).coerceAtLeast(0)
-                    val ty = (loc[1] - lp.height * 0.66f).toInt().coerceAtLeast(0)
+            if (panel != null && lp != null && v != null) {
+                val base = perchBase()
+                if (base != null && !dragActive) {
+                    val maxX = resources.displayMetrics.widthPixels - lp.width
+                    val tx = (base.first + perchDx).coerceIn(0, maxX.coerceAtLeast(0))
+                    val ty = (base.second + perchDy).coerceAtLeast(0)
                     if (abs(tx - lp.x) > 2 || abs(ty - lp.y) > 2) {
                         lp.x = tx
                         lp.y = ty
@@ -404,6 +357,8 @@ class CapriService : Service() {
         if (!perched) { preX = lp.x; preY = lp.y }
         perched = true
         sleeping = false
+        perchDx = pi("perch_dx", 0)
+        perchDy = pi("perch_dy", 0)
         pet?.setFlip(false)
         pet?.rest = restClip()
         pet?.play("perch_arrive", loop = false)
@@ -424,76 +379,24 @@ class CapriService : Service() {
         }
         applyRest()
     }
+
+    // Setelah Capri digeser saat duduk, simpan selisihnya dari posisi duduk biasa.
+    private fun savePerchOffset() {
+        val lp = petLp ?: return
+        val base = perchBase() ?: return
+        perchDx = lp.x - base.first
+        perchDy = lp.y - base.second
+        Cfg.set(this, "perch_dx", perchDx.toString())
+        Cfg.set(this, "perch_dy", perchDy.toString())
+    }
+
+    // ---------- Gerak: jalan-jalan, pindah, sembunyi ----------
+
     private val wanderRun = object : Runnable {
         override fun run() {
-            if (wanderOn() && pet != null && panel == null && !dragActive && !sleeping) wanderTo(randomSpot())
+            if (po("wander", false) && pet != null && panel == null && !dragActive && !sleeping) wanderTo(randomSpot())
             ui.postDelayed(this, 25000L)
         }
-    }
-
-    private fun proactive(instruction: String) {
-        val p = prefs()
-        val key = (p.getString("key", "") ?: "").trim()
-        if (key.isEmpty()) return
-        val model = (p.getString("model", "") ?: "").trim().ifEmpty { Brain.DEFAULT_MODEL }
-        val nick = (p.getString("nick", "") ?: "").trim()
-        val lang = p.getString("lang", "id") ?: "id"
-        val replies = p.getString("replies", "short") ?: "short"
-        val memory = p.getString("memory", "20")?.toIntOrNull() ?: 20
-        thread {
-            val out = Brain.ask(key, model, instruction, nick, lang, replies, memory, true)
-            if (out.isBlank() || Brain.isError(out)) return@thread
-            ui.post {
-                lastReply = out
-                if (panel != null) say(out)
-                pet?.play("grin", loop = false)
-                speak(out)
-            }
-        }
-    }
-
-    private fun playTone() {
-        val vol = (prefs().getString("sounds", "100")?.toIntOrNull() ?: 100).coerceIn(0, 100)
-        if (vol == 0) return
-        try {
-            val g = ToneGenerator(AudioManager.STREAM_NOTIFICATION, vol)
-            g.startTone(ToneGenerator.TONE_PROP_BEEP, 40)
-            ui.postDelayed({ g.release() }, 200L)
-        } catch (_: Exception) {}
-    }
-
-    private fun toggleHide() {
-        hidden = !hidden
-        val v = pet
-        if (v != null) {
-            v.rest = restClip()
-            if (hidden) {
-                v.play(if (perched) "perch_leave" else "leave", loop = false)
-                ui.postDelayed({
-                    if (hidden) {
-                        pet?.visibility = View.GONE
-                    }
-                }, 780L)
-            } else {
-                v.visibility = View.VISIBLE
-                v.play(if (perched) "perch_arrive" else "arrive", loop = false)
-            }
-        }
-        startAsForeground()
-    }
-
-    private fun wakeOn() = prefs().getString("wake", "off") == "on"
-
-    // Mode "Panggil Capri": mic terus mendengarkan dan membuka chat kalau nama Capri disebut.
-    private fun wakeLoop(ms: Long) {
-        ui.postDelayed({ if (wakeOn() && panel == null && !listening && !callMode) startListening() }, ms)
-    }
-
-    private fun wake() {
-        if (sleeping) { sleeping = false; pet?.rest = restClip(); pet?.play("wake", loop = false) }
-        ui.removeCallbacks(sleepRun)
-        val mins = prefs().getString("sleep", "0")?.toIntOrNull() ?: 0
-        if (mins > 0) ui.postDelayed(sleepRun, mins * 60_000L)
     }
 
     private fun randomSpot(): Pair<Int, Int> {
@@ -501,10 +404,7 @@ class CapriService : Service() {
         val maxX = (resources.displayMetrics.widthPixels - lp.width).coerceAtLeast(0)
         val minY = dp(60)
         val maxY = (resources.displayMetrics.heightPixels - lp.height - dp(120)).coerceAtLeast(minY + 1)
-        return Pair(
-            kotlin.random.Random.nextInt(maxX + 1),
-            minY + kotlin.random.Random.nextInt(maxY - minY)
-        )
+        return Pair(Random.nextInt(maxX + 1), minY + Random.nextInt(maxY - minY))
     }
 
     private fun wanderTo(target: Pair<Int, Int>) {
@@ -539,10 +439,35 @@ class CapriService : Service() {
         wake()
     }
 
+    private fun toggleHide() {
+        hidden = !hidden
+        val v = pet
+        if (v != null) {
+            v.rest = restClip()
+            if (hidden) {
+                v.play(if (perched) "perch_leave" else "leave", loop = false)
+                ui.postDelayed({
+                    if (hidden) {
+                        pet?.visibility = View.GONE
+                    }
+                }, 780L)
+            } else {
+                v.visibility = View.VISIBLE
+                v.play(if (perched) "perch_arrive" else "arrive", loop = false)
+            }
+        }
+        startAsForeground()
+    }
+
+    private val longPressRun = Runnable {
+        longFired = true
+        bringHere()
+    }
+
     private fun showPet() {
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val v = SpriteView(this)
-        v.setHologram(prefs().getString("hologram", "off") == "on")
+        v.setHologram(po("hologram", false))
         val lp = WindowManager.LayoutParams(
             dp(petWidthDp()), dp(petWidthDp() * 8 / 5),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -587,10 +512,11 @@ class CapriService : Service() {
                 MotionEvent.ACTION_UP -> {
                     ui.removeCallbacks(longPressRun)
                     if (dragging) {
+                        if (perched) savePerchOffset()
                         dragActive = false
                         applyRest()
                     } else if (!longFired) {
-                        if (headPatsOn() && e.y < v.height * 0.35f) {
+                        if (po("headpats", true) && e.y < v.height * 0.35f) {
                             v.play("grin", loop = false) // elus kepala
                         } else {
                             togglePanel()
@@ -614,7 +540,7 @@ class CapriService : Service() {
             }
             wake()
             ui.postDelayed(wanderRun, 25000L)
-            ui.postDelayed(proactiveRun, 60000L)
+            ui.postDelayed(proactiveRun, 30000L)
             ui.postDelayed(musicRun, 3000L)
             if (wakeOn()) wakeLoop(1000)
         } catch (e: Exception) {
@@ -622,60 +548,265 @@ class CapriService : Service() {
         }
     }
 
-    private fun smallButton(label: String): Button = Button(this).apply {
+    // ---------- Keaktifan, musik, ingatan layar ----------
+
+    private val proactiveRun = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
+            val act = activity()
+            if (panel == null && pet != null && !sleeping && !hidden && act > 0) {
+                val gapMin = (96f - act * 0.9f).coerceAtLeast(3f)
+                if (now - lastProactive > (gapMin * 60_000f).toLong()) {
+                    lastProactive = now
+                    val screenOk = po("watch", false) && po("screencomment", true) && act >= 50 && Random.nextFloat() < 0.6f
+                    if (screenOk) proactive(SCREEN_INSTR, true) else proactive(POP_INSTR, false)
+                }
+                if (po("checkin", false) && now - lastTalk > 2 * 3_600_000L && now - lastCheckin > 2 * 3_600_000L) {
+                    lastCheckin = now
+                    lastTalk = now
+                    proactive(CHECK_INSTR, false)
+                }
+                if (po("chaos", false) && Random.nextFloat() < 0.05f * (1f + act / 50f)) {
+                    pet?.glitchBurst(900L)
+                    pet?.play(if (Random.nextBoolean()) "glitch" else "dance", loop = false)
+                }
+                if (Random.nextFloat() < act / 100f * 0.5f) quirk()
+            }
+            rememberScreen(now)
+            ui.postDelayed(this, 30_000L)
+        }
+    }
+
+    // Cek tiap 3 detik apakah ada musik dari app lain. Suara Capri sendiri tidak dihitung.
+    private val musicRun = object : Runnable {
+        override fun run() {
+            val am = getSystemService(AudioManager::class.java)
+            val busy = voice.active || speaking || tts?.isSpeaking == true
+            val playing = po("music", true) && !busy && am.isMusicActive
+            if (playing != musicOn && !dragActive && !sleeping) {
+                musicOn = playing
+                AppLog.add("MUSIK", if (playing) "musik terdeteksi, Capri joget" else "musik berhenti")
+                pet?.setNotes(playing && po("music_notes", true))
+                if (playing && po("music_notes", true)) Chime.play(pi("sounds", Cfg.SOUNDS))
+                if (playing && panel == null && activity() >= 40 && Random.nextFloat() < activity() / 150f) proactive(MUSIC_INSTR, false)
+                applyRest()
+            }
+            ui.postDelayed(this, 3000L)
+        }
+    }
+
+    // Tiap menit, kalau layar dibagikan: Capri catat apa yang sedang dilihat, untuk ingatan obrolan.
+    private fun rememberScreen(now: Long) {
+        if (!po("remember", false) || !po("watch", false)) return
+        if (now - lastRemember < 60_000L) return
+        lastRemember = now
+        val key = ps("key", "").trim()
+        if (key.isEmpty()) return
+        val model = ps("model", "").trim().ifEmpty { Brain.DEFAULT_MODEL }
+        val memory = pi("memory", Cfg.MEMORY)
+        val max = pi("watchmem", Cfg.WATCHMEM)
+        thread {
+            val img = ScreenWatch.latestB64() ?: return@thread
+            val line = Brain.ask(key, model, REMEMBER_INSTR, "", "en", "short", memory, true, img, "")
+            if (line.isBlank() || Brain.isError(line)) return@thread
+            synchronized(screenLines) {
+                screenLines.add(line.take(160))
+                while (screenLines.size > max) screenLines.removeAt(0)
+            }
+        }
+    }
+
+    private val followRun = Runnable { proactive(FOLLOW_INSTR, false) }
+
+    // Capri ngomong duluan (tanpa diminta). withScreen = komentar tentang isi layar.
+    private fun proactive(instruction: String, withScreen: Boolean) {
+        val key = ps("key", "").trim()
+        if (key.isEmpty()) return
+        val model = ps("model", "").trim().ifEmpty { Brain.DEFAULT_MODEL }
+        val nick = ps("nick", "").trim()
+        val lang = ps("lang", "id")
+        val replies = ps("replies", "short")
+        val memory = pi("memory", Cfg.MEMORY)
+        thread {
+            val img = if (withScreen) ScreenWatch.latestB64() else null
+            if (withScreen && img == null) return@thread
+            val out = Brain.ask(key, model, instruction, nick, lang, replies, memory, true, img, "")
+            if (out.isBlank() || Brain.isError(out)) return@thread
+            ui.post {
+                if (!sleeping && !hidden && !voice.active && !speaking) deliver(out, false)
+            }
+        }
+    }
+
+    private fun playTone() {
+        val vol = pi("sounds", Cfg.SOUNDS).coerceIn(0, 100)
+        if (vol == 0) return
+        try {
+            val g = ToneGenerator(AudioManager.STREAM_NOTIFICATION, vol)
+            g.startTone(ToneGenerator.TONE_PROP_BEEP, 40)
+            ui.postDelayed({ g.release() }, 200L)
+        } catch (_: Exception) {}
+    }
+
+    // ---------- Gelembung bicara ----------
+
+    private fun removeBubble() {
+        bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        bubble = null
+    }
+
+    private val bubbleHide = Runnable { removeBubble() }
+
+    private fun showBubble(msg: String) {
+        if (panel != null) return // saat chat terbuka, jawaban sudah tampil di panel
+        val base = petLp ?: return
+        if (pet == null) return
+        removeBubble()
+        val tv = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            maxWidth = dp(230)
+            background = GradientDrawable().apply {
+                setColor(0xF2101826.toInt())
+                setStroke(dp(2), CY)
+                cornerRadius = dp(12).toFloat()
+            }
+            text = msg
+        }
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.x = base.x.coerceIn(0, (resources.displayMetrics.widthPixels - dp(240)).coerceAtLeast(0))
+        lp.y = (base.y - dp(90)).coerceAtLeast(dp(20))
+        try {
+            wm.addView(tv, lp)
+            bubble = tv
+        } catch (_: Exception) {
+            return
+        }
+        ui.removeCallbacks(bubbleHide)
+        ui.postDelayed(bubbleHide, pi("bubble_sec", Cfg.BUBBLE_SEC).coerceIn(3, 60) * 1000L)
+    }
+
+    // ---------- Panel chat (bisa digeser) ----------
+
+    private fun chip(label: String, fill: Int, textColor: Int): Button = Button(this).apply {
         text = label
         textSize = 13f
         isAllCaps = false
         minWidth = 0
         minimumWidth = 0
-        setPadding(dp(4), 0, dp(4), 0)
+        minHeight = 0
+        minimumHeight = 0
+        setPadding(dp(4), dp(9), dp(4), dp(9))
+        setTextColor(textColor)
+        background = GradientDrawable().apply {
+            setColor(fill)
+            setStroke(dp(1), CY)
+            cornerRadius = dp(12).toFloat()
+        }
     }
 
     private fun togglePanel() {
         if (panel != null) { closePanel(); return }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setPadding(dp(12), dp(8), dp(12), dp(10))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#F2101820"))
-                setStroke(dp(2), Color.parseColor("#05D9E8"))
-                cornerRadius = dp(10).toFloat()
+                setColor(0xF2101826.toInt())
+                setStroke(dp(2), CY)
+                cornerRadius = dp(18).toFloat()
             }
         }
+
+        // Kepala panel: foto, nama, status, dan pegangan untuk menggeser.
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        val avatar = ImageView(this).apply {
+            try {
+                val bmp = BitmapFactory.decodeStream(assets.open("sprites/face.png"))
+                setImageBitmap(android.graphics.Bitmap.createScaledBitmap(bmp, dp(34), dp(34), true))
+            } catch (_: Exception) {}
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) { outline.setOval(0, 0, view.width, view.height) }
+            }
+            clipToOutline = true
+        }
+        val title = TextView(this).apply {
+            text = "CAPRI"
+            setTextColor(PK)
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            letterSpacing = 0.12f
+            setPadding(dp(8), 0, dp(6), 0)
+        }
+        val status = TextView(this).apply {
+            text = "● online"
+            setTextColor(CY)
+            textSize = 10f
+        }
+        val grab = TextView(this).apply {
+            text = "⠿ geser"
+            setTextColor(0xFF7A8AA3.toInt())
+            textSize = 11f
+            gravity = Gravity.END
+        }
+        head.addView(avatar, LinearLayout.LayoutParams(dp(34), dp(34)))
+        head.addView(title)
+        head.addView(status)
+        head.addView(grab, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
         val r = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 14f
-            maxLines = 8
-            text = "CAPRI: Yo. Ketik atau tekan mik dan ngomong."
+            maxLines = 7
+            setPadding(0, dp(2), 0, dp(6))
         }
         val inp = EditText(this).apply {
             hint = "ketik ke Capri…"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
+            setTextColor(0xFFE8F7FF.toInt())
+            setHintTextColor(0xFF6B7A8F.toInt())
             setSingleLine()
             imeOptions = EditorInfo.IME_ACTION_SEND
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = GradientDrawable().apply {
+                setColor(0xFF0B1120.toInt())
+                setStroke(dp(1), 0xFF2A3A4F.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
         }
         inp.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                if (prefs().getString("typingsound", "off") == "on") playTone()
+                if (po("typingsound", false)) playTone()
             }
-            override fun afterTextChanged(s: android.text.Editable?) {}
+            override fun afterTextChanged(s: Editable?) {}
         })
-        val send = smallButton("Kirim")
-        val mic = smallButton("🎤")
-        val call = smallButton("📞")
-        val voice = smallButton("🔊")
-        val close = smallButton("Tutup")
-        if (prefs().getString("mini", "off") == "on") {
+        val send = chip("Kirim", CY, 0xFF0B1120.toInt())
+        val mic = chip("🎤", 0xFF16202E.toInt(), Color.WHITE)
+        val call = chip("📞", 0xFF16202E.toInt(), Color.WHITE)
+        val voiceB = chip("🔊", 0xFF16202E.toInt(), Color.WHITE)
+        val close = chip("✕", 0xFF2A1420.toInt(), PK)
+        if (po("mini", false)) {
             mic.visibility = View.GONE
             call.visibility = View.GONE
-            voice.visibility = View.GONE
+            voiceB.visibility = View.GONE
         }
         val row = LinearLayout(this)
-        for (b in listOf(send, mic, call, voice, close)) {
-            row.addView(b, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        for (b in listOf(send, mic, call, voiceB, close)) {
+            val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            lp.setMargins(dp(2), dp(6), dp(2), 0)
+            row.addView(b, lp)
         }
+        box.addView(head)
         box.addView(r)
         box.addView(inp)
         box.addView(row)
@@ -690,9 +821,9 @@ class CapriService : Service() {
             if (callMode) startListening() else stopListening()
             refresh()
         }
-        voice.setOnClickListener {
-            prefs().edit().putBoolean("voice", !voiceOn()).apply()
-            if (!voiceOn()) { tts?.stop(); pet?.stopTalk() }
+        voiceB.setOnClickListener {
+            Cfg.prefs(this).edit().putBoolean("voice", !voiceOn()).apply()
+            if (!voiceOn()) stopAudio()
             refresh()
         }
         close.setOnClickListener { closePanel() }
@@ -705,15 +836,48 @@ class CapriService : Service() {
             PixelFormat.TRANSLUCENT
         )
         lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        lp.y = dp(24)
+        lp.x = pi("panel_x", 0)
+        lp.y = pi("panel_y", dp(24))
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+
+        // Geser panel dengan menyeret kepalanya; posisi diingat.
+        var dX = 0f
+        var dY = 0f
+        var sX = 0
+        var sY = 0
+        head.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dX = e.rawX; dY = e.rawY
+                    sX = lp.x; sY = lp.y
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val maxX = ((resources.displayMetrics.widthPixels - lp.width) / 2).coerceAtLeast(0)
+                    val maxY = (resources.displayMetrics.heightPixels - box.height - dp(40)).coerceAtLeast(0)
+                    lp.x = (sX + (e.rawX - dX)).toInt().coerceIn(-maxX, maxX)
+                    lp.y = (sY - (e.rawY - dY)).toInt().coerceIn(0, maxY)
+                    try { wm.updateViewLayout(box, lp) } catch (_: Exception) {}
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    Cfg.set(this, "panel_x", lp.x.toString())
+                    Cfg.set(this, "panel_y", lp.y.toString())
+                    true
+                }
+                else -> false
+            }
+        }
+
         wm.addView(box, lp)
         panel = box
+        panelLp = lp
         reply = r
         input = inp
         micBtn = mic
         callBtn = call
-        voiceBtn = voice
+        voiceBtn = voiceB
+        renderReply(null, "Yo. Ketik atau tekan mik dan ngomong.")
         refresh()
         startPerch()
     }
@@ -721,8 +885,9 @@ class CapriService : Service() {
     private fun closePanel() {
         callMode = false
         stopListening()
-        panel?.let { wm.removeView(it) }
+        panel?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         panel = null
+        panelLp = null
         reply = null
         input = null
         micBtn = null
@@ -738,7 +903,27 @@ class CapriService : Service() {
         voiceBtn?.text = if (voiceOn()) "🔊" else "🔇"
     }
 
-    private fun say(msg: String) { reply?.text = "CAPRI: $msg" }
+    // Tulis percakapan: baris abang (abu-abu miring) dan jawaban Capri (nama merah muda, isi cyan).
+    private fun renderReply(user: String?, capri: String) {
+        val sb = SpannableStringBuilder()
+        if (!user.isNullOrEmpty()) {
+            val u = "> you: " + user.take(80) + "\n"
+            sb.append(u)
+            sb.setSpan(ForegroundColorSpan(0xFF7A8AA3.toInt()), 0, u.length, 0)
+            sb.setSpan(StyleSpan(Typeface.ITALIC), 0, u.length, 0)
+            sb.setSpan(RelativeSizeSpan(0.85f), 0, u.length, 0)
+        }
+        val s1 = sb.length
+        sb.append("CAPRI: ")
+        sb.setSpan(ForegroundColorSpan(PK), s1, sb.length, 0)
+        sb.setSpan(StyleSpan(Typeface.BOLD), s1, sb.length, 0)
+        val s2 = sb.length
+        sb.append(capri)
+        sb.setSpan(ForegroundColorSpan(0xFFBFF8FF.toInt()), s2, sb.length, 0)
+        reply?.text = sb
+    }
+
+    private fun say(msg: String) { renderReply(lastUser, msg) }
 
     // ---------- Kirim ke otak ----------
 
@@ -751,99 +936,267 @@ class CapriService : Service() {
     }
 
     private fun ask(text: String) {
-        if (handleOpenApp(text)) return
-        val p = prefs()
-        val key = (p.getString("key", "") ?: "").trim()
-        val model = (p.getString("model", "") ?: "").trim().ifEmpty { Brain.DEFAULT_MODEL }
-        val nick = (p.getString("nick", "") ?: "").trim()
+        lastUser = text
+        wake()
+        stopAudio()
+        ui.removeCallbacks(followRun)
+        lastTalk = System.currentTimeMillis()
+        if (handleCommand(text)) return
+        val key = ps("key", "").trim()
+        val model = ps("model", "").trim().ifEmpty { Brain.DEFAULT_MODEL }
+        val nick = ps("nick", "").trim()
         if (key.isEmpty()) {
             say("Belum ada API key. Buka app Capri Mobile dan isi key nvapi- dulu.")
             return
         }
         say("…")
-        ui.removeCallbacks(followRun)
-        lastTalk = System.currentTimeMillis()
-        wake()
-        stopAudio()
-        pet?.stopTalk()
-        pet?.play("glitch")
+        val action = bodyAction(text)
+        if (action == null) {
+            pet?.play(if (perched || edgeSit()) "perch_glitch" else "glitch")
+        }
+        val sent = if (action != null) "$text\n[Aplikasi baru saja menjalankan aksi: $action. Tanggapi sebagai Capri.]" else text
+        val lang = ps("lang", "id")
+        val replies = ps("replies", "short")
+        val memory = pi("memory", Cfg.MEMORY)
+        val watchOn = po("watch", false)
         thread {
-            val lang = p.getString("lang", "id") ?: "id"
-            val replies = p.getString("replies", "short") ?: "short"
-            val memory = p.getString("memory", "20")?.toIntOrNull() ?: 20
-            val watchOn = prefs().getString("watch", "off") == "on"
-            val img = if (watchOn) ScreenWatch.freshB64(90_000L) else null
+            val img = if (watchOn) ScreenWatch.latestB64() else null
             AppLog.add(
                 "LAYAR",
                 if (img != null) "gambar layar dikirim ke otak (${img.length / 1024} KB)"
-                else if (watchOn) "Lihat layar nyala, tapi belum ada gambar terbaru"
+                else if (watchOn) "Lihat layar nyala, tapi belum ada gambar"
                 else "Lihat layar mati di pengaturan, gambar tidak dikirim"
             )
             val ctx = synchronized(screenLines) { screenLines.joinToString("; ") }
-            val out = Brain.ask(key, model, text, nick, lang, replies, memory, false, img, ctx)
+            val out = Brain.ask(key, model, sent, nick, lang, replies, memory, false, img, ctx)
+            ui.post { deliver(out, Brain.isError(out)) }
+        }
+    }
+
+    // ---------- Perintah lokal: kontrol HP ----------
+
+    private fun localReply(msg: String) { deliver(msg, false) }
+
+    private fun setTouchable(on: Boolean) {
+        val flag = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        petLp?.let { lp ->
+            lp.flags = if (on) lp.flags and flag.inv() else lp.flags or flag
+            pet?.let { try { wm.updateViewLayout(it, lp) } catch (_: Exception) {} }
+        }
+        panelLp?.let { lp ->
+            lp.flags = if (on) lp.flags and flag.inv() else lp.flags or flag
+            panel?.let { try { wm.updateViewLayout(it, lp) } catch (_: Exception) {} }
+        }
+    }
+
+    private fun phone(okMsg: String, failMsg: String, action: (CapriAccess) -> Boolean) {
+        if (!po("control", true)) { localReply("Kontrol HP lagi dimatikan di pengaturan."); return }
+        val acc = CapriAccess.instance
+        if (acc == null) {
+            localReply("Aku belum boleh mengontrol HP. Nyalakan \"Capri Mobile\" di Pengaturan > Aksesibilitas dulu.")
+            return
+        }
+        say("…")
+        setTouchable(false)
+        thread {
+            val ok = try {
+                action(acc)
+            } catch (e: Exception) {
+                AppLog.add("KONTROL", "gagal: ${e.javaClass.simpleName} ${e.message}")
+                false
+            }
             ui.post {
-                lastReply = out
-                say(out)
-                showBubble(out)
-                if (prefs().getString("followup", "off") == "on") {
-                    ui.removeCallbacks(followRun)
-                    ui.postDelayed(followRun, 30_000L)
-                }
-                applyRest()
-                speak(out)
+                setTouchable(true)
+                localReply(if (ok) okMsg else failMsg)
             }
         }
     }
 
-    // ---------- Suara keluar (TTS) ----------
+    private fun lev(a: String, b: String): Int {
+        val row = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            var prev = row[0]
+            row[0] = i
+            for (j in 1..b.length) {
+                val tmp = row[j]
+                row[j] = minOf(row[j] + 1, row[j - 1] + 1, prev + (if (a[i - 1] == b[j - 1]) 0 else 1))
+                prev = tmp
+            }
+        }
+        return row[b.length]
+    }
 
-    private fun speak(text: String) {
-        val p = prefs()
-        val eKey = (p.getString("eleven_key", "") ?: "").trim()
-        val eVoice = (p.getString("eleven_voice", "") ?: "").trim()
-        val mode = p.getString("voice_mode", "cloud")
-        val fKey = (p.getString("fish_key", "") ?: "").trim()
-        val fVoice = (p.getString("fish_voice", "") ?: "").trim()
-        if (voiceOn() && mode == "fish" && fKey.isNotEmpty() && fVoice.isNotEmpty()) {
-            val clean2 = cleanForSpeech(text)
-            if (clean2.isEmpty()) { afterReply(); return }
-            val spd2 = speedValue()
-            thread {
-                try {
-                    val wav = Effects.process(FishVoice.speak(fKey, fVoice, spd2, clean2), robotLevel(), glitchLevel())
-                    ui.post { playWav(wav) }
-                } catch (e: Exception) {
+    private fun openApp(query: String) {
+        val q = query.trim().removeSuffix(" dong").removeSuffix(" ya").removeSuffix(" please").trim()
+        if (q.isEmpty()) return
+        say("…")
+        thread {
+            val pm = packageManager
+            val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            val labeled = apps.map { it to it.loadLabel(pm).toString() }
+            val ql = q.lowercase()
+            val hit = labeled.firstOrNull { it.second.equals(q, true) }
+                ?: labeled.firstOrNull { it.second.contains(q, true) }
+                ?: labeled.firstOrNull { it.second.length >= 4 && q.contains(it.second, true) }
+                ?: labeled.minByOrNull { lev(it.second.lowercase(), ql) }?.takeIf { q.length >= 4 && lev(it.second.lowercase(), ql) <= 2 }
+            if (hit != null) {
+                val launch = pm.getLaunchIntentForPackage(hit.first.activityInfo.packageName)
+                if (launch != null) {
+                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     ui.post {
-                        say(lastReply + "\n(suara Fish gagal: ${e.message?.take(80)})").also { AppLog.add("SUARA", "Fish gagal: ${e.message}") }
-                        speakFallback(text)
+                        try {
+                            startActivity(launch)
+                            localReply("Oke, aku bukain ${hit.second}.")
+                        } catch (e: Exception) {
+                            AppLog.add("KONTROL", "buka app gagal: ${e.javaClass.simpleName} ${e.message}")
+                            localReply("Gagal membuka ${hit.second}. Mungkin HP-nya butuh izin tampil di latar belakang.")
+                        }
                     }
+                    return@thread
                 }
             }
-        } else if (voiceOn() && eKey.isNotEmpty() && eVoice.isNotEmpty() && mode == "cloud") {
-            val eModel = (p.getString("eleven_model", "") ?: "").trim()
-            val stab = p.getString("eleven_stab", "")?.toFloatOrNull() ?: ElevenVoice.DEFAULT_STABILITY
-            val sim = p.getString("eleven_sim", "")?.toFloatOrNull() ?: ElevenVoice.DEFAULT_SIMILARITY
-            val spd = p.getString("eleven_speed", "")?.toFloatOrNull() ?: ElevenVoice.DEFAULT_SPEED
-            val clean = cleanForSpeech(text)
-            if (clean.isEmpty()) { afterReply(); return }
-            thread {
-                try {
-                    val wav = Effects.process(ElevenVoice.speak(eKey, eVoice, eModel, stab, sim, spd.coerceIn(0.7f, 1.2f), clean), robotLevel(), glitchLevel())
-                    ui.post { playWav(wav) }
-                } catch (e: Exception) {
-                    ui.post {
-                        say(lastReply + "\n(suara ElevenLabs gagal: ${e.message?.take(80)})").also { AppLog.add("SUARA", "ElevenLabs gagal: ${e.message}") }
-                        speakFallback(text)
-                    }
+            // Tidak ketemu di daftar app: cari sambil menggulir kalau kontrol HP aktif.
+            val acc = CapriAccess.instance
+            if (acc != null && po("control", true)) {
+                ui.post { setTouchable(false); say("Nggak ada di daftar, kucari sambil gulir…") }
+                val ok = try { acc.openByScrolling(q) } catch (e: Exception) { false }
+                ui.post {
+                    setTouchable(true)
+                    localReply(if (ok) "Ketemu, kubuka $q." else "Udah kugulir, nggak nemu \"$q\".")
                 }
+            } else {
+                ui.post { localReply("Nggak nemu app \"$q\" di HP ini. Kalau mau kucari sambil gulir, nyalakan kontrol HP di Aksesibilitas.") }
             }
+        }
+    }
+
+    // Perintah yang diurus aplikasi sendiri tanpa lewat otak. true = sudah ditangani.
+    private fun handleCommand(raw: String): Boolean {
+        val t = raw.trim().lowercase().trimEnd('!', '.', '?').trim()
+        if (t.isEmpty()) return false
+        when (t) {
+            "kembali", "back", "balik" -> { phone("Oke, mundur.", "Gagal kembali.") { it.back() }; return true }
+            "home", "beranda", "ke home", "ke beranda" -> { phone("Udah di beranda.", "Gagal ke beranda.") { it.home() }; return true }
+            "recent", "recents", "aplikasi terbaru", "app terbaru", "buka recent" -> { phone("Nih daftar app terbaru.", "Gagal membuka daftar app.") { it.recents() }; return true }
+            "notifikasi", "notif", "buka notifikasi" -> { phone("Notifikasinya kebuka.", "Gagal membuka notifikasi.") { it.notifications() }; return true }
+        }
+        Regex("^(scroll|gulir|geser)\\s*(ke\\s*)?(bawah|turun|down|atas|naik|up)\\b.*$").find(t)?.let {
+            val down = it.groupValues[3] in listOf("bawah", "turun", "down")
+            phone("Udah kugulir.", "Gagal menggulir.") { acc -> acc.swipe(down) }
+            return true
+        }
+        Regex("^(klik|tekan|pencet|tap|click|ketuk)\\s+(.+)$").find(t)?.let {
+            val target = it.groupValues[2].removeSurrounding("\"")
+            phone("Kena: $target.", "Nggak nemu \"$target\" di layar.") { acc -> acc.findAndClick(target, 4) }
+            return true
+        }
+        Regex("^(buka|bukain|bukakan|open|nyalain|jalankan|launch)\\s+(.+)$").find(t)?.let {
+            openApp(it.groupValues[2])
+            return true
+        }
+        return false
+    }
+
+    // ---------- Menampilkan jawaban dan suara ----------
+
+    // Teks jawaban muncul di panel dan gelembung.
+    private fun showReply(out: String) {
+        say(out)
+        showBubble(out)
+        val act = activity()
+        if (po("followup", false) || (act >= 70 && Random.nextFloat() < 0.4f)) {
+            ui.removeCallbacks(followRun)
+            ui.postDelayed(followRun, 30_000L)
+        }
+    }
+
+    private fun deliver(out: String, isError: Boolean) {
+        lastReply = out
+        if (isError) {
+            showReply(out)
+            applyRest()
+            return
+        }
+        val kind = cloudKind()
+        if (kind != null) {
+            val sync = po("voice_sync", true)
+            if (!sync) { showReply(out); applyRest() }
+            speakCloud(kind, out, sync)
         } else {
-            speakFallback(text)
+            showReply(out)
+            applyRest()
+            expression(out)
+            speakPhone(out)
         }
     }
 
-    // Suara bawaan HP, dipakai kalau belum ada key/voice ID ElevenLabs atau kalau ElevenLabs gagal.
-    private fun speakFallback(text: String) {
+    private fun cloudKind(): String? {
+        if (!voiceOn()) return null
+        return when (ps("voice_mode", "cloud")) {
+            "fish" -> if (ps("fish_key", "").isNotBlank() && ps("fish_voice", "").isNotBlank()) "fish" else null
+            "cloud" -> if (ps("eleven_key", "").isNotBlank() && ps("eleven_voice", "").isNotBlank()) "eleven" else null
+            else -> null
+        }
+    }
+
+    // Suara cloud diputar bertahap. Kalau sync, teks baru muncul tepat saat suara mulai, jadi nggak ada jeda.
+    private fun speakCloud(kind: String, text: String, sync: Boolean) {
+        val pieces = Speech.pieces(cleanForSpeech(text))
+        if (pieces.isEmpty()) {
+            if (sync) showReply(text)
+            applyRest()
+            afterReply()
+            return
+        }
+        val speed = speedValue()
+        val fetch: (String) -> ByteArray
+        if (kind == "fish") {
+            val k = ps("fish_key", "").trim()
+            val v = ps("fish_voice", "").trim()
+            fetch = { t -> FishVoice.piece(k, v, speed, t) }
+        } else {
+            val k = ps("eleven_key", "").trim()
+            val v = ps("eleven_voice", "").trim()
+            val m = ps("eleven_model", "").trim()
+            val st = Cfg.float(this, "eleven_stab", ElevenVoice.DEFAULT_STABILITY)
+            val si = Cfg.float(this, "eleven_sim", ElevenVoice.DEFAULT_SIMILARITY)
+            fetch = { t -> ElevenVoice.piece(k, v, m, st, si, speed, t) }
+        }
+        var shown = false
+        fun showOnce() {
+            if (!shown) {
+                shown = true
+                if (sync) showReply(text)
+            }
+        }
+        if (sync) ui.postDelayed({ showOnce() }, 12000L) // jaga-jaga: tampilkan teks walau suara lama
+        voice.play(
+            pieces, fetch, robotLevel(), glitchLevel(), volumeGain(),
+            onFirstAudio = {
+                ui.post {
+                    showOnce()
+                    speaking = true
+                    pet?.ambientGlitch = glitchLevel()
+                    pet?.talk(lastReply, true)
+                    applyRest()
+                    expression(lastReply)
+                }
+            },
+            onDone = { ui.post { spoke() } },
+            onError = { msg ->
+                ui.post {
+                    AppLog.add("SUARA", "$kind gagal: $msg")
+                    showOnce()
+                    say(text + "\n(suara $kind gagal: " + msg.take(80) + ")")
+                    applyRest()
+                    speakPhone(text)
+                }
+            }
+        )
+    }
+
+    // Suara bawaan HP: dipakai kalau tidak ada key cloud, atau kalau suara cloud gagal.
+    private fun speakPhone(text: String) {
         val clean = cleanForSpeech(text)
         if (voiceOn() && ttsReady && clean.isNotEmpty()) {
             tts?.setPitch(pitchValue())
@@ -860,57 +1213,19 @@ class CapriService : Service() {
         .replace(Regex("[\\p{So}\\p{Sk}]"), "")
         .trim()
 
-    private fun playWav(bytes: ByteArray) {
-        stopAudio()
-        AppLog.add("SUARA", "putar audio ${bytes.size} byte, volume=${volumeLevel()}")
-        try {
-            val f = java.io.File(cacheDir, "capri-voice.wav")
-            f.writeBytes(bytes)
-            val mp = android.media.MediaPlayer()
-            mp.setAudioAttributes(
-                android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            mp.setDataSource(f.absolutePath)
-            mp.setOnPreparedListener {
-                AppLog.add("SUARA", "MediaPlayer siap, durasi ${it.duration} ms")
-                pet?.talk(lastReply, true)
-                it.setVolume(volumeLevel(), volumeLevel())
-                it.start()
-            }
-            mp.setOnCompletionListener {
-                AppLog.add("SUARA", "audio selesai diputar")
-                it.release()
-                if (player === it) player = null
-                spoke()
-            }
-            mp.setOnErrorListener { m, what, extra ->
-                AppLog.add("SUARA", "MediaPlayer error what=$what extra=$extra")
-                m.release()
-                if (player === m) player = null
-                spoke()
-                true
-            }
-            player = mp
-            mp.prepareAsync()
-        } catch (e: Exception) {
-            AppLog.add("SUARA", "playWav gagal: ${e.javaClass.name}: ${e.message}")
-            spoke()
-        }
-    }
-
     private fun stopAudio() {
-        player?.let {
-            try { it.stop() } catch (_: Exception) {}
-            it.release()
-        }
-        player = null
+        voice.stop()
+        tts?.stop()
+        speaking = false
+        pet?.ambientGlitch = 0
+        pet?.stopTalk()
     }
 
     private fun spoke() {
+        speaking = false
+        pet?.ambientGlitch = 0
         pet?.stopTalk()
+        applyRest()
         afterReply()
     }
 
@@ -919,6 +1234,13 @@ class CapriService : Service() {
     }
 
     // ---------- Suara masuk (mik) ----------
+
+    private fun wakeOn() = po("wake", false)
+
+    // Mode "Panggil Capri": mik terus mendengarkan dan membuka chat kalau nama Capri disebut.
+    private fun wakeLoop(ms: Long) {
+        ui.postDelayed({ if (wakeOn() && panel == null && !listening && !callMode) startListening() }, ms)
+    }
 
     private val listener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {}
@@ -1002,8 +1324,7 @@ class CapriService : Service() {
             refresh()
             return
         }
-        tts?.stop() // supaya suara Capri sendiri nggak ikut terdengar mik
-        pet?.stopTalk()
+        stopAudio() // supaya suara Capri sendiri nggak ikut terdengar mik
         val rec = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this).also {
             it.setRecognitionListener(listener)
             recognizer = it
@@ -1028,12 +1349,12 @@ class CapriService : Service() {
     override fun onDestroy() {
         if (pet != null) {
             closePanel()
-            wm.removeView(pet)
+            removeBubble()
+            try { wm.removeView(pet!!) } catch (_: Exception) {}
             pet = null
         }
         ui.removeCallbacksAndMessages(null)
         stopAudio()
-        tts?.stop()
         tts?.shutdown()
         recognizer?.destroy()
         super.onDestroy()
