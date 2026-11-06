@@ -308,7 +308,7 @@ class CapriService : Service() {
             ui.removeCallbacks(glitchOff)
             ui.postDelayed(glitchOff, ms + 150L)
             Chime.zap(pi("sounds", Cfg.SOUNDS))
-            AppLog.add("GLITCH", "glitch layar $ms ms, area ${(frac * 100).toInt}%, retak=$doCrack")
+            AppLog.add("GLITCH", "glitch layar $ms ms, area ${(frac * 100).toInt()}%, retak=$doCrack")
         } catch (e: Exception) {
             AppLog.add("GLITCH", "gagal: ${e.javaClass.simpleName} ${e.message}")
         }
