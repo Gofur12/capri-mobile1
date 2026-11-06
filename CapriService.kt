@@ -4,6 +4,7 @@ import android.Manifest
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.app.AppOpsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -868,10 +869,10 @@ class CapriService : Service() {
         inp.setOnEditorActionListener { _, action, _ ->
             if (action == EditorInfo.IME_ACTION_SEND) { sendTyped(); true } else false
         }
-        mic.setOnClickListener { if (listening) stopListening() else startListening() }
+        mic.setOnClickListener { if (listening) stopListening() else startListening(manual = true) }
         call.setOnClickListener {
             callMode = !callMode
-            if (callMode) startListening() else stopListening()
+            if (callMode) startListening(manual = true) else stopListening()
             refresh()
         }
         voiceB.setOnClickListener {
@@ -1291,12 +1292,18 @@ class CapriService : Service() {
     private fun wakeOn() = po("wake", false)
 
     // Mode "Panggil Capri": mik terus mendengarkan dan membuka chat kalau nama Capri disebut.
+    private val wakeRun = Runnable {
+        if (wakeOn() && panel == null && !listening && !callMode && !micBlocked) startListening()
+    }
+
     private fun wakeLoop(ms: Long) {
-        ui.postDelayed({ if (wakeOn() && panel == null && !listening && !callMode) startListening() }, ms)
+        if (micBlocked) return
+        ui.removeCallbacks(wakeRun) // satu timer saja, biar tidak numpuk
+        ui.postDelayed(wakeRun, ms)
     }
 
     private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) { AppLog.add("MIK", "siap mendengar") }
+        override fun onReadyForSpeech(params: Bundle?) { permFails = 0; AppLog.add("MIK", "siap mendengar") }
         override fun onBeginningOfSpeech() { AppLog.add("MIK", "suara terdeteksi") }
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -1338,6 +1345,10 @@ class CapriService : Service() {
         override fun onError(error: Int) {
             AppLog.add("MIK", "onError kode $error (${micName(error)}), mode $micTry")
             listening = false
+            if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                handleMicPermissionError()
+                return
+            }
             val quiet = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
             val wakeMode = panel == null && wakeOn()
 
@@ -1405,6 +1416,45 @@ class CapriService : Service() {
     }
 
     private var micWanted = false
+    private var permFails = 0        // kode 9 berturut-turut
+    private var micBlocked = false   // true = berhenti minta mik sampai pengguna menekan 🎤/📞
+
+    // Mode appop RECORD_AUDIO: "ignored"/"errored" berarti HP (mis. MIUI) memblokir mik walau izin tampak diberikan.
+    private fun micOpMode(): String = try {
+        val ao = getSystemService(AppOpsManager::class.java)
+        val m = if (Build.VERSION.SDK_INT >= 29)
+            ao.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_RECORD_AUDIO, android.os.Process.myUid(), packageName)
+        else
+            @Suppress("DEPRECATION") ao.checkOpNoThrow(AppOpsManager.OPSTR_RECORD_AUDIO, android.os.Process.myUid(), packageName)
+        when (m) {
+            AppOpsManager.MODE_ALLOWED -> "allowed"
+            AppOpsManager.MODE_IGNORED -> "ignored"
+            AppOpsManager.MODE_ERRORED -> "errored"
+            else -> "mode$m"
+        }
+    } catch (e: Exception) { "?" }
+
+    // Kode 9: jangan diulang terus. Buang koneksi lama, coba paling banyak 2 kali, lalu berhenti dan jelaskan.
+    private fun handleMicPermissionError() {
+        permFails++
+        ui.removeCallbacks(wakeRun)
+        micWanted = false
+        callMode = false
+        recognizer?.destroy()
+        recognizer = null
+        val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        AppLog.add("MIK", "kode 9 ke-$permFails, izin app=$granted, appop=${micOpMode()}")
+        if (granted && permFails <= 2) {
+            ui.postDelayed({ if (!listening && !micBlocked) startListening() }, 1500L)
+            return
+        }
+        micBlocked = true
+        say(
+            if (!granted) "Izin mikrofon belum diberikan. Buka app Capri Mobile dan izinkan, lalu tekan 🎤 lagi."
+            else "Mik ditolak HP walau izin sudah ada. Cek: izin mikrofon app Google, penghemat baterai Capri = Tanpa batasan, dan Autostart Capri aktif. Lalu tekan 🎤 lagi."
+        )
+        refresh()
+    }
     private var micMisses = 0
     private var micRetry = 0
     private var micTry = 0 // 0: bahasa HP, 1: model pencarian, 2: tanpa menyebut bahasa
@@ -1426,8 +1476,10 @@ class CapriService : Service() {
         else -> "?"
     }
 
-    private fun startListening() {
+    private fun startListening(manual: Boolean = false) {
         if (listening) return
+        if (manual) { micBlocked = false; permFails = 0 }
+        if (micBlocked) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             callMode = false
             say("Izin mikrofon belum diberikan. Buka app Capri Mobile dan izinkan.")
@@ -1458,7 +1510,7 @@ class CapriService : Service() {
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
             if (micTry != 2) putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
         }
-        AppLog.add("MIK", "mulai mendengarkan, mode $micTry")
+        AppLog.add("MIK", "mulai mendengarkan, mode $micTry, appop=${micOpMode()}")
         listening = true
         say("Mendengarkan… ngomong aja")
         refresh()
