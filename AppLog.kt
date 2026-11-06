@@ -8,7 +8,7 @@ import java.util.Locale
 
 // Catatan kejadian app (disimpan di file di HP). Crash yang tak tertangkap juga dicatat di sini.
 object AppLog {
-    const val BUILD = "r8"
+    const val BUILD = "r9"
     private const val MAX = 60_000
     private var file: File? = null
     private val fmt = SimpleDateFormat("dd/MM HH:mm:ss", Locale.US)

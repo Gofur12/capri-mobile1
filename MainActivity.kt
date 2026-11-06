@@ -489,6 +489,7 @@ class MainActivity : Activity() {
         slider(fx, "Robot", "robot", 0, 100, Cfg.ROBOT, ye, fmt = { if (it == 0) "Mati" else "$it%" })
         slider(fx, "Glitch suara", "glitch", 0, 100, Cfg.GLITCH, ye, fmt = { if (it == 0) "Mati" else "$it%" })
         slider(fx, "Volume bunyi efek", "sounds", 0, 100, Cfg.SOUNDS, ye, fmt = { "$it%" })
+        slider(fx, "Glitch layar (area yang kena)", "glitch_area", 0, 100, 50, ye, fmt = { if (it == 0) "Mati" else "$it% layar" })
         toggle(fx, "Bunyi saat mengetik", "typingsound", false)
 
         // ----- Tampilan dan gerak -----

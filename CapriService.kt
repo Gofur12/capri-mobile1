@@ -266,6 +266,46 @@ class CapriService : Service() {
         if (mins > 0) ui.postDelayed(sleepRun, mins * 60_000L)
     }
 
+    // ---------- Glitch di layar ----------
+
+    private var glitchView: GlitchView? = null
+    private val glitchOff = Runnable { removeGlitch() }
+
+    private fun removeGlitch() {
+        glitchView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        glitchView = null
+    }
+
+    // Glitch di sebagian layar (pita warna, kotak, garis scan) di sekitar Capri.
+    private fun screenGlitch(ms: Long, strength: Float) {
+        val area = pi("glitch_area", 50)
+        if (area <= 0 || pet == null || hidden) return
+        try {
+            var gv = glitchView
+            if (gv == null) {
+                gv = GlitchView(this)
+                val glp = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    PixelFormat.TRANSLUCENT
+                )
+                wm.addView(gv, glp)
+                glitchView = gv
+            }
+            val plp = petLp
+            val cy = if (plp != null) plp.y + plp.height / 2f else resources.displayMetrics.heightPixels / 2f
+            gv.burst(ms, strength, cy, area / 100f)
+            ui.removeCallbacks(glitchOff)
+            ui.postDelayed(glitchOff, ms + 150L)
+            Chime.zap(pi("sounds", Cfg.SOUNDS))
+            AppLog.add("GLITCH", "glitch layar $ms ms, area $area%")
+        } catch (e: Exception) {
+            AppLog.add("GLITCH", "gagal: ${e.javaClass.simpleName} ${e.message}")
+        }
+    }
+
     // Ekspresi sesuai isi balasan.
     private fun expression(text: String) {
         val v = pet ?: return
@@ -274,6 +314,7 @@ class CapriService : Service() {
         when {
             Regex("glitch|static|error|rusak|crash|sinyal").containsMatchIn(t) -> {
                 v.glitchBurst(1400L)
+                screenGlitch(900L, 0.6f)
                 v.play(if (sit) "perch_glitch" else "glitch", loop = false)
             }
             Regex("haha|hehe|wkwk|lol|hihi|asik|mantap|keren|yay|seru").containsMatchIn(t) || t.trimEnd().endsWith("!") -> {
@@ -288,7 +329,10 @@ class CapriService : Service() {
         if (speaking || sleeping || dragActive || panel != null || hidden) return
         val r = Random.nextFloat()
         when {
-            r < 0.5f -> v.glitchBurst(380L)
+            r < 0.5f -> {
+                v.glitchBurst(380L)
+                if (activity() >= 50) screenGlitch(500L, 0.5f)
+            }
             r < 0.8f -> if (!perched && !musicOn && !edgeSit()) v.play("grin", loop = false)
             else -> if (!musicOn && !edgeSit()) v.play("dance", loop = false)
         }
@@ -300,6 +344,7 @@ class CapriService : Service() {
         return when {
             Regex("\\bglitch").containsMatchIn(l) -> {
                 pet?.glitchBurst(2200L)
+                screenGlitch(2200L, 1f)
                 glitchBoostUntil = System.currentTimeMillis() + 45_000L
                 "glitch"
             }
@@ -568,6 +613,7 @@ class CapriService : Service() {
                 }
                 if (po("chaos", false) && Random.nextFloat() < 0.05f * (1f + act / 50f)) {
                     pet?.glitchBurst(900L)
+                    screenGlitch(1100L, 0.8f)
                     pet?.play(if (Random.nextBoolean()) "glitch" else "dance", loop = false)
                 }
                 if (Random.nextFloat() < act / 100f * 0.5f) quirk()
@@ -578,18 +624,25 @@ class CapriService : Service() {
     }
 
     // Cek tiap 3 detik apakah ada musik dari app lain. Suara Capri sendiri tidak dihitung.
+    private var musicOff = 0
+
     private val musicRun = object : Runnable {
         override fun run() {
             val am = getSystemService(AudioManager::class.java)
-            val busy = voice.active || speaking || tts?.isSpeaking == true
-            val playing = po("music", true) && !busy && am.isMusicActive
-            if (playing != musicOn && !dragActive && !sleeping) {
-                musicOn = playing
-                AppLog.add("MUSIK", if (playing) "musik terdeteksi, Capri joget" else "musik berhenti")
-                pet?.setNotes(playing && po("music_notes", true))
-                if (playing && po("music_notes", true)) Chime.play(pi("sounds", Cfg.SOUNDS))
-                if (playing && panel == null && activity() >= 40 && Random.nextFloat() < activity() / 150f) proactive(MUSIC_INSTR, false)
-                applyRest()
+            // Saat mik mendengar atau Capri bicara, HP sering menjeda musik sebentar: jangan ubah keadaan.
+            val busy = voice.active || speaking || listening || tts?.isSpeaking == true
+            if (!busy) {
+                val raw = po("music", true) && am.isMusicActive
+                if (raw) musicOff = 0 else musicOff++
+                val playing = raw || (musicOn && musicOff < 2)
+                if (playing != musicOn && !dragActive && !sleeping) {
+                    musicOn = playing
+                    AppLog.add("MUSIK", if (playing) "musik terdeteksi, Capri joget" else "musik berhenti")
+                    pet?.setNotes(playing && po("music_notes", true))
+                    if (playing && po("music_notes", true)) Chime.play(pi("sounds", Cfg.SOUNDS))
+                    if (playing && panel == null && activity() >= 40 && Random.nextFloat() < activity() / 150f) proactive(MUSIC_INSTR, false)
+                    applyRest()
+                }
             }
             ui.postDelayed(this, 3000L)
         }
@@ -1243,8 +1296,8 @@ class CapriService : Service() {
     }
 
     private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
+        override fun onReadyForSpeech(params: Bundle?) { AppLog.add("MIK", "siap mendengar") }
+        override fun onBeginningOfSpeech() { AppLog.add("MIK", "suara terdeteksi") }
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
@@ -1257,6 +1310,10 @@ class CapriService : Service() {
 
         override fun onResults(results: Bundle?) {
             listening = false
+            micMisses = 0
+            micRetry = 0
+            micWanted = false
+            AppLog.add("MIK", "hasil diterima")
             val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim() ?: ""
             if (panel == null && wakeOn()) {
                 if (t.contains("capri", ignoreCase = true)) {
@@ -1279,35 +1336,94 @@ class CapriService : Service() {
         }
 
         override fun onError(error: Int) {
-            AppLog.add("MIK", "onError kode $error")
+            AppLog.add("MIK", "onError kode $error (${micName(error)}), mode $micTry")
             listening = false
-            if (panel == null && wakeOn() && error != SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS && error != SpeechRecognizer.ERROR_NETWORK) {
-                wakeLoop(800)
+            val quiet = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+            val wakeMode = panel == null && wakeOn()
+
+            // Galat yang biasanya sementara: buat ulang pengenal suara lalu coba lagi.
+            if ((error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == 11) && micRetry < 2) {
+                micRetry++
+                recognizer?.destroy()
+                recognizer = null
+                if (micWanted || wakeMode) ui.postDelayed({ if ((micWanted || wakeMode) && !listening) startListening() }, 500L)
+                refresh()
                 return
             }
-            when (error) {
-                SpeechRecognizer.ERROR_NO_MATCH,
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> if (callMode) listenSoon(600)
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
-                    callMode = false
-                    say("Izin mikrofon belum diberikan. Buka app Capri Mobile dan izinkan, lalu Hentikan dan Mulai lagi.")
-                }
-                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> {
-                    callMode = false
-                    say("Pengenal suara butuh internet. Cek koneksi.")
-                }
-                else -> {
-                    callMode = false
-                    say("Mik error (kode $error).")
-                }
+            // Bahasa belum tersedia: coba lagi tanpa menyebut bahasa.
+            if ((error == 12 || error == 13) && micRetry < 2) {
+                micRetry++
+                micTry = 2
+                if (micWanted || wakeMode) ui.postDelayed({ if (!listening) startListening() }, 300L)
+                refresh()
+                return
             }
+            if (quiet) {
+                micMisses++
+                micTry = (micTry + 1) % 3 // ganti cara mengenali di percobaan berikutnya
+                if (wakeMode) {
+                    wakeLoop(if (micMisses > 3) 3000L else 800L)
+                } else if (callMode) {
+                    if (micMisses >= 4) {
+                        callMode = false
+                        micWanted = false
+                        micMisses = 0
+                        say("Nggak ada suara kedengaran, mode telepon kumatikan. Tekan 📞 lagi kalau mau.")
+                    } else {
+                        say("Menunggu kamu ngomong…")
+                        listenSoon(600)
+                    }
+                } else {
+                    micWanted = false
+                    say("Nggak kedengaran jelas. Coba ngomong lebih dekat dan agak keras, lalu tekan 🎤 lagi.")
+                }
+                refresh()
+                return
+            }
+            if (wakeMode && error != SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS && error != SpeechRecognizer.ERROR_NETWORK) {
+                wakeLoop(2000L)
+                return
+            }
+            callMode = false
+            micWanted = false
+            say(
+                when (error) {
+                    SpeechRecognizer.ERROR_AUDIO -> "Mik nggak bisa dipakai (error audio). Mungkin lagi dipakai app lain atau diblokir HP di latar belakang."
+                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Pengenal suara butuh internet. Cek koneksi."
+                    SpeechRecognizer.ERROR_SERVER -> "Server pengenal suara lagi bermasalah. Coba lagi sebentar."
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Izin mikrofon belum diberikan. Buka app Capri Mobile dan izinkan, lalu Hentikan dan Mulai lagi."
+                    10 -> "Pengenal suara kebanyakan permintaan. Tunggu sebentar."
+                    else -> "Mik error (kode $error, ${micName(error)})."
+                }
+            )
             refresh()
         }
     }
 
     private fun listenSoon(ms: Long) {
         ui.postDelayed({ if (callMode && !listening && panel != null) startListening() }, ms)
+    }
+
+    private var micWanted = false
+    private var micMisses = 0
+    private var micRetry = 0
+    private var micTry = 0 // 0: bahasa HP, 1: model pencarian, 2: tanpa menyebut bahasa
+
+    private fun micName(code: Int): String = when (code) {
+        1 -> "NETWORK_TIMEOUT"
+        2 -> "NETWORK"
+        3 -> "AUDIO"
+        4 -> "SERVER"
+        5 -> "CLIENT"
+        6 -> "SPEECH_TIMEOUT"
+        7 -> "NO_MATCH"
+        8 -> "RECOGNIZER_BUSY"
+        9 -> "INSUFFICIENT_PERMISSIONS"
+        10 -> "TOO_MANY_REQUESTS"
+        11 -> "SERVER_DISCONNECTED"
+        12 -> "LANGUAGE_NOT_SUPPORTED"
+        13 -> "LANGUAGE_UNAVAILABLE"
+        else -> "?"
     }
 
     private fun startListening() {
@@ -1324,23 +1440,33 @@ class CapriService : Service() {
             refresh()
             return
         }
+        micWanted = true
         stopAudio() // supaya suara Capri sendiri nggak ikut terdengar mik
         val rec = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this).also {
             it.setRecognitionListener(listener)
             recognizer = it
         }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                if (micTry == 1) RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH else RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            if (micTry != 2) putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
         }
+        AppLog.add("MIK", "mulai mendengarkan, mode $micTry")
         listening = true
-        say("Mendengarkan…")
+        say("Mendengarkan… ngomong aja")
         refresh()
         rec.startListening(intent)
     }
 
     private fun stopListening() {
+        micWanted = false
         if (listening) recognizer?.cancel()
         listening = false
         refresh()
@@ -1353,6 +1479,7 @@ class CapriService : Service() {
             try { wm.removeView(pet!!) } catch (_: Exception) {}
             pet = null
         }
+        removeGlitch()
         ui.removeCallbacksAndMessages(null)
         stopAudio()
         tts?.shutdown()
