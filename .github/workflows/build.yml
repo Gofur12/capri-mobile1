@@ -1,0 +1,85 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Susun struktur proyek Android
+        run: |
+          set -e
+          P=build_src
+          mkdir -p $P/app/src/main/java/app/capri/mobile
+          mkdir -p $P/app/src/main/res/xml
+          mkdir -p $P/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p $P/app/src/main/assets/sprites
+          cp *.kt $P/app/src/main/java/app/capri/mobile/
+          cp AndroidManifest.xml $P/app/src/main/
+          cp capri_access.xml $P/app/src/main/res/xml/
+          cp ic_launcher.png $P/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          for f in *.png; do
+            case "$f" in ic_launcher.png|app-logo.png) ;; *) cp "$f" $P/app/src/main/assets/sprites/ ;; esac
+          done
+          cp build.gradle.kts settings.gradle.kts gradle.properties $P/
+          cp app-build.gradle.kts $P/app/build.gradle.kts
+
+      - name: Siapkan tanda tangan (jika secrets ada)
+        id: sign
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > build_src/capri.jks
+            cat >> build_src/app/build.gradle.kts <<'KTS'
+
+          android {
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("../capri.jks")
+                      storePassword = System.getenv("KS_PASS")
+                      keyAlias = System.getenv("KS_ALIAS")
+                      keyPassword = System.getenv("KS_PASS")
+                  }
+              }
+              buildTypes {
+                  getByName("release") {
+                      signingConfig = signingConfigs.getByName("release")
+                      isMinifyEnabled = false
+                  }
+              }
+          }
+          KTS
+            echo "task=assembleRelease" >> $GITHUB_OUTPUT
+            echo "dir=release" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::Secrets keystore belum ada, build APK debug."
+            echo "task=assembleDebug" >> $GITHUB_OUTPUT
+            echo "dir=debug" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        working-directory: build_src
+        env:
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: gradle ${{ steps.sign.outputs.task }} --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capri-mobile-${{ steps.sign.outputs.dir }}
+          path: build_src/app/build/outputs/apk/${{ steps.sign.outputs.dir }}/*.apk
