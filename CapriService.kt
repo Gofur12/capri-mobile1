@@ -4,6 +4,7 @@ import android.Manifest
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -60,6 +61,7 @@ private const val FOLLOW_INSTR = "Add one short follow-up line to what you just 
 private const val REMEMBER_INSTR = "Describe in one short English sentence what the user is doing on screen right now. Only describe, no greeting."
 private const val SCREEN_INSTR = "React to what is on the user's screen right now in one short sentence, in character. Mention only what you can actually see; if you cannot tell, say something else short."
 private const val MUSIC_INSTR = "Music just started playing on the user's phone. React in one short line, in character, without asking a question."
+private const val HEARD_INSTR = "You just overheard the user say this out loud, maybe to someone else instead of you: \"%s\". React in one very short line, in character. If it is a question you can answer, answer it. If it is just chatter, tease them or comment. Do not be creepy about listening. Do not ask a question."
 
 private val CY = 0xFF05D9E8.toInt()
 private val PK = 0xFFFF2A6D.toInt()
@@ -105,6 +107,10 @@ class CapriService : Service() {
     private var lastRemember = 0L
     private var bubble: TextView? = null
     private val screenLines = ArrayList<String>()
+    private var miniPlayer: MiniPlayer? = null
+    private var spawned = false
+    private var lastSpawn = 0L
+    private var lastHeard = 0L
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun pi(key: String, def: Int) = Cfg.int(this, key, def)
@@ -122,6 +128,10 @@ class CapriService : Service() {
     private fun petWidthDp(): Int = (90 * pi("size_pct", Cfg.SIZE) / 100).coerceIn(45, 180)
     private fun edgeSit() = po("perch", false)
     private fun activity() = pi("activity", Cfg.ACTIVITY).coerceIn(0, 100)
+    private fun earsOn() = po("wake", true)
+    private fun hearAll() = po("heareverything", false)
+    private fun watchEveryMs(): Long = pi("watch_every", Cfg.WATCH_EVERY).coerceIn(5, 60) * 1000L
+    private fun miniPlayerOn() = po("miniplayer", true)
 
     override fun onBind(i: Intent?): IBinder? = null
 
@@ -166,9 +176,12 @@ class CapriService : Service() {
             petKey = key
             showPet()
         }
+        if (miniPlayerOn()) startMiniPlayer() else stopMiniPlayer()
+        if (earsOn() && panel == null && !listening && !callMode) wakeLoop(400)
         when (i?.action) {
             "hide" -> toggleHide()
             "bring" -> bringHere()
+            "spawn" -> spawnSequence(true)
             "screen_start" -> {
                 val code = i?.getIntExtra("code", 0) ?: 0
                 @Suppress("DEPRECATION")
@@ -594,11 +607,94 @@ class CapriService : Service() {
             wake()
             ui.postDelayed(wanderRun, 25000L)
             ui.postDelayed(proactiveRun, 30000L)
+            ui.postDelayed(rememberRun, 5000L)
             ui.postDelayed(musicRun, 3000L)
-            if (wakeOn()) wakeLoop(1000)
+            spawnSequence(false)
+            if (miniPlayerOn()) startMiniPlayer() else stopMiniPlayer()
+            if (earsOn()) wakeLoop(1000)
         } catch (e: Exception) {
             stopSelf() // izin overlay belum diberikan
         }
+    }
+
+    // ---------- Spawn dan pemutar musik mini ----------
+
+    // Efek muncul pertama kali: glitch layar, tendangan sinyal, lalu sapaan ikonik Capri.
+    private fun spawnSequence(force: Boolean) {
+        if (!force && spawned) return
+        if (force && System.currentTimeMillis() - lastSpawn < 2500L) return
+        if (!po("spawn", Cfg.SPAWN)) return
+        val v = pet ?: return
+        spawned = true
+        lastSpawn = System.currentTimeMillis()
+        v.glitchBurst(1600L)
+        screenGlitch(1500L, 1f)
+        Chime.zap(pi("sounds", Cfg.SOUNDS))
+        Chime.play(pi("sounds", Cfg.SOUNDS), intArrayOf(392, 523, 784, 1046))
+        v.play("arrive", loop = false)
+        ui.postDelayed({
+            val line = spawnLine()
+            val file = spawnVoiceName()
+            val played = Sfx.playAsset(
+                this,
+                listOf("voice/$file", "assets/voice/$file", file, "assets/$file"),
+                pi("volume", Cfg.VOLUME)
+            )
+            if (played) {
+                lastReply = line
+                say(line)
+                showBubble(line)
+                pet?.talk(line, false)
+                ui.postDelayed({ pet?.stopTalk(); applyRest() }, 2800L)
+            } else {
+                deliver(line, false)
+            }
+        }, 700L)
+        AppLog.add("SPAWN", "efek spawn dijalankan (suara ikonik: ${spawnVoiceName()})")
+    }
+
+    private fun spawnVoiceName(): String {
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        return when {
+            hour in 5..11 -> "hello-morning.wav"
+            hour >= 22 || hour < 5 -> "hello-late.wav"
+            else -> "hello-miss.wav"
+        }
+    }
+
+    private fun spawnLine(): String {
+        val id = listOf(
+            "Sistem online. Kangen, choom?",
+            "Aku balik. Jangan bilang kamu nggak kangen.",
+            "Sinyal ketemu. Ada misi buatku?",
+            "Nyawa baru, HP lama. Ayo bikin rusuh.",
+            "Beaming in. Missed me?",
+            "Kembali online. Dunia ini masih berisik."
+        )
+        val en = listOf(
+            "System online. Missed me, choom?",
+            "Beaming in. You look like you need trouble.",
+            "Signal found. What are we breaking today?",
+            "Back online. Try not to miss me too much.",
+            "New life, same phone. Let's cause something."
+        )
+        return if (ps("lang", "id") in listOf("id", "auto")) id.random() else en.random()
+    }
+
+    private fun startMiniPlayer() {
+        if (!miniPlayerOn() || pet == null || !this::wm.isInitialized) { stopMiniPlayer(); return }
+        if (!MediaWatcher.hasAccess(this)) {
+            miniPlayer?.stop()
+            miniPlayer = null
+            return
+        }
+        val mp = miniPlayer ?: MiniPlayer(this, wm).also { miniPlayer = it }
+        mp.start()
+    }
+
+    private fun stopMiniPlayer() {
+        miniPlayer?.stop()
+        miniPlayer = null
     }
 
     // ---------- Keaktifan, musik, ingatan layar ----------
@@ -640,7 +736,8 @@ class CapriService : Service() {
             // Saat mik mendengar atau Capri bicara, HP sering menjeda musik sebentar: jangan ubah keadaan.
             val busy = voice.active || speaking || listening || tts?.isSpeaking == true
             if (!busy) {
-                val raw = po("music", true) && am.isMusicActive
+                val media = MediaWatcher.refresh()
+                val raw = po("music", true) && (am.isMusicActive || media?.playing == true)
                 if (raw) musicOff = 0 else musicOff++
                 val playing = raw || (musicOn && musicOff < 2)
                 if (playing != musicOn && !dragActive && !sleeping) {
@@ -652,14 +749,23 @@ class CapriService : Service() {
                     applyRest()
                 }
             }
+            if (miniPlayerOn() && MediaWatcher.hasAccess(this)) startMiniPlayer() else if (!miniPlayerOn()) stopMiniPlayer()
             ui.postDelayed(this, 3000L)
         }
     }
 
-    // Tiap menit, kalau layar dibagikan: Capri catat apa yang sedang dilihat, untuk ingatan obrolan.
+    // Cek ingatan layar lebih rapat dari aktivitas, supaya slider 5-60 detik benar-benar berlaku.
+    private val rememberRun = object : Runnable {
+        override fun run() {
+            rememberScreen(System.currentTimeMillis())
+            ui.postDelayed(this, 5000L)
+        }
+    }
+
+    // Tiap beberapa detik (slider 5-60 detik), kalau layar dibagikan: Capri catat apa yang sedang dilihat.
     private fun rememberScreen(now: Long) {
         if (!po("remember", false) || !po("watch", false)) return
-        if (now - lastRemember < 60_000L) return
+        if (now - lastRemember < watchEveryMs()) return
         lastRemember = now
         val key = ps("key", "").trim()
         if (key.isEmpty()) return
@@ -1087,30 +1193,41 @@ class CapriService : Service() {
         return row[b.length]
     }
 
-    private fun openApp(query: String) {
-        val q = query.trim().removeSuffix(" dong").removeSuffix(" ya").removeSuffix(" please").trim()
+    private class AppHit(val label: String, val pkg: String)
+
+    private fun cleanAppQuery(raw: String): String =
+        raw.trim().removeSuffix(" dong").removeSuffix(" ya").removeSuffix(" please").trim()
+
+    private fun findAppHit(q: String): AppHit? {
+        val pm = packageManager
+        val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+        val labeled = apps.map { it to it.loadLabel(pm).toString() }
+        val ql = q.lowercase()
+        val hit = labeled.firstOrNull { it.second.equals(q, true) }
+            ?: labeled.firstOrNull { it.second.contains(q, true) }
+            ?: labeled.firstOrNull { it.second.length >= 4 && q.contains(it.second, true) }
+            ?: labeled.minByOrNull { lev(it.second.lowercase(), ql) }?.takeIf { q.length >= 4 && lev(it.second.lowercase(), ql) <= 2 }
+        return hit?.let { AppHit(it.second, it.first.activityInfo.packageName) }
+    }
+
+    private fun openApp(query: String, announce: Boolean = true) {
+        val q = cleanAppQuery(query)
         if (q.isEmpty()) return
-        say("…")
+        if (announce) say("…")
         thread {
             val pm = packageManager
-            val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
-            val labeled = apps.map { it to it.loadLabel(pm).toString() }
-            val ql = q.lowercase()
-            val hit = labeled.firstOrNull { it.second.equals(q, true) }
-                ?: labeled.firstOrNull { it.second.contains(q, true) }
-                ?: labeled.firstOrNull { it.second.length >= 4 && q.contains(it.second, true) }
-                ?: labeled.minByOrNull { lev(it.second.lowercase(), ql) }?.takeIf { q.length >= 4 && lev(it.second.lowercase(), ql) <= 2 }
+            val hit = findAppHit(q)
             if (hit != null) {
-                val launch = pm.getLaunchIntentForPackage(hit.first.activityInfo.packageName)
+                val launch = pm.getLaunchIntentForPackage(hit.pkg)
                 if (launch != null) {
                     launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     ui.post {
                         try {
                             startActivity(launch)
-                            localReply("Oke, aku bukain ${hit.second}.")
+                            if (announce) localReply("Oke, aku bukain ${hit.label}.")
                         } catch (e: Exception) {
                             AppLog.add("KONTROL", "buka app gagal: ${e.javaClass.simpleName} ${e.message}")
-                            localReply("Gagal membuka ${hit.second}. Mungkin HP-nya butuh izin tampil di latar belakang.")
+                            if (announce) localReply("Gagal membuka ${hit.label}. Mungkin HP-nya butuh izin tampil di latar belakang.")
                         }
                     }
                     return@thread
@@ -1119,15 +1236,104 @@ class CapriService : Service() {
             // Tidak ketemu di daftar app: cari sambil menggulir kalau kontrol HP aktif.
             val acc = CapriAccess.instance
             if (acc != null && po("control", true)) {
-                ui.post { setTouchable(false); say("Nggak ada di daftar, kucari sambil gulir…") }
+                ui.post {
+                    setTouchable(false)
+                    if (announce) say("Nggak ada di daftar, kucari sambil gulir…")
+                }
                 val ok = try { acc.openByScrolling(q) } catch (e: Exception) { false }
                 ui.post {
                     setTouchable(true)
-                    localReply(if (ok) "Ketemu, kubuka $q." else "Udah kugulir, nggak nemu \"$q\".")
+                    if (announce) localReply(if (ok) "Ketemu, kubuka $q." else "Udah kugulir, nggak nemu \"$q\".")
                 }
             } else {
-                ui.post { localReply("Nggak nemu app \"$q\" di HP ini. Kalau mau kucari sambil gulir, nyalakan kontrol HP di Aksesibilitas.") }
+                ui.post {
+                    if (announce) localReply("Nggak nemu app \"$q\" di HP ini. Kalau mau kucari sambil gulir, nyalakan kontrol HP di Aksesibilitas.")
+                }
             }
+        }
+    }
+
+    private fun closeApp(query: String, announce: Boolean = true) {
+        val q = cleanAppQuery(query)
+        val here = q.isEmpty() || q in listOf("ini", "app", "aplikasi", "aplikasi ini", "app ini", "sekarang", "yang lagi buka", "yang terbuka")
+        if (announce) say("…")
+        thread {
+            val acc = CapriAccess.instance
+            val am = getSystemService(ActivityManager::class.java)
+            if (here) {
+                val cur = try { acc?.foregroundPackage() } catch (_: Exception) { null }
+                val ok = try { acc?.home() ?: false } catch (_: Exception) { false }
+                if (cur != null && cur != packageName) {
+                    try { am.killBackgroundProcesses(cur) } catch (_: Exception) {}
+                }
+                ui.post { if (announce) localReply(if (ok) "Oke, kututup app yang lagi kebuka." else "Kontrol HP belum aktif, jadi aku nggak bisa menutupnya.") }
+                return@thread
+            }
+            val hit = findAppHit(q)
+            if (hit == null) {
+                ui.post { if (announce) localReply("Nggak nemu app \"$q\".") }
+                return@thread
+            }
+            val current = try { acc?.foregroundPackage() } catch (_: Exception) { null }
+            ui.post { setTouchable(false) }
+            if (current == hit.pkg) {
+                try { acc?.home() } catch (_: Exception) {}
+                Thread.sleep(350L)
+            }
+            var ok = false
+            try {
+                am.killBackgroundProcesses(hit.pkg)
+                ok = true
+            } catch (e: Exception) {
+                AppLog.add("KONTROL", "tutup app gagal: ${e.javaClass.simpleName} ${e.message}")
+            }
+            ui.post {
+                setTouchable(true)
+                if (announce) localReply(if (ok) "${hit.label} udah kututup." else "Gagal menutup ${hit.label}.")
+            }
+        }
+    }
+
+    private fun playSong(query: String, announce: Boolean = true) {
+        val q = query.trim().ifBlank { MusicSearch.favorite() }
+        if (announce) say("…")
+        thread {
+            val res = MusicSearch.play(this, q, ps("music_app", "auto"))
+            ui.post {
+                if (!announce) return@post
+                if (res.ok) {
+                    localReply("Oke, ${if (q.isBlank()) "aku pilih" else "kucari"} \"${res.message}\" di ${res.app}. Nyetel sekarang.")
+                } else {
+                    localReply("Nggak bisa muter \"$q\". Install app musik atau buka akses notifikasi dulu.")
+                }
+            }
+        }
+    }
+
+    private fun mediaAction(what: String, okMsg: String, failMsg: String) {
+        val ok = MediaWatcher.command(what)
+        localReply(if (ok) okMsg else failMsg)
+        if (ok) ui.postDelayed({ applyRest() }, 400L)
+    }
+
+    private fun nowPlaying() {
+        val text = MediaWatcher.describe()
+        if (text.isBlank()) {
+            localReply("Nggak ada lagu yang lagi diputar, atau akses notifikasi belum nyala.")
+            return
+        }
+        localReply("Lagi muter: $text.")
+    }
+
+    // Jalankan aksi tersembunyi yang dititipkan otak di ujung balasannya.
+    private fun executeAction(action: Actions.Act) {
+        AppLog.add("AKSI", "${action.kind}: ${action.arg}")
+        when (action.kind) {
+            "play" -> playSong(action.arg.ifBlank { MusicSearch.favorite() }, false)
+            "search" -> playSong(action.arg.ifBlank { MusicSearch.favorite() }, false)
+            "music" -> MediaWatcher.command(action.arg)
+            "open" -> if (action.arg.isNotBlank()) openApp(action.arg, false)
+            "close" -> closeApp(action.arg, false)
         }
     }
 
@@ -1140,6 +1346,20 @@ class CapriService : Service() {
             "home", "beranda", "ke home", "ke beranda" -> { phone("Udah di beranda.", "Gagal ke beranda.") { it.home() }; return true }
             "recent", "recents", "aplikasi terbaru", "app terbaru", "buka recent" -> { phone("Nih daftar app terbaru.", "Gagal membuka daftar app.") { it.recents() }; return true }
             "notifikasi", "notif", "buka notifikasi" -> { phone("Notifikasinya kebuka.", "Gagal membuka notifikasi.") { it.notifications() }; return true }
+            "jeda", "pause", "pause musik", "jeda musik", "jeda lagu", "stop", "stop musik", "stop lagu",
+            "berhenti", "berhenti musik", "berhenti lagu", "matikan musik", "matikan lagu" ->
+                { mediaAction("pause", "Oke, kujeda musiknya.", "Nggak ada yang bisa kujeda."); return true }
+            "lanjut", "resume", "lanjutkan", "lanjut musik", "play", "mainkan lagi", "putar lagi" ->
+                { mediaAction("play", "Lanjut. Musiknya jalan lagi.", "Nggak ada musik yang bisa dilanjutin."); return true }
+            "lagu berikutnya", "next", "next lagu", "skip", "ganti lagu", "lanjut lagu" ->
+                { mediaAction("next", "Oke, lagu berikutnya.", "Nggak bisa skip lagu."); return true }
+            "lagu sebelumnya", "previous", "prev", "kembali lagu", "lagu tadi" ->
+                { mediaAction("previous", "Balik ke lagu sebelumnya.", "Nggak bisa balik lagu."); return true }
+            "lagu apa ini", "lagu apa", "what's playing", "whats playing", "sedang apa", "musik apa", "lagu yang mana" -> { nowPlaying(); return true }
+            "tutup", "tutup aplikasi ini", "tutup app ini", "close", "close app" -> { closeApp("", true); return true }
+            "favorit", "lagu favorit", "lagu kesukaan", "pilihanmu", "terserah kamu", "favorite",
+            "putar musik", "mainkan musik", "putar lagu", "mainkan lagu", "nyalain musik", "lagu dong", "musik dong" ->
+                { playSong(MusicSearch.favorite(), true); return true }
         }
         Regex("^(scroll|gulir|geser)\\s*(ke\\s*)?(bawah|turun|down|atas|naik|up)\\b.*$").find(t)?.let {
             val down = it.groupValues[3] in listOf("bawah", "turun", "down")
@@ -1149,6 +1369,23 @@ class CapriService : Service() {
         Regex("^(klik|tekan|pencet|tap|click|ketuk)\\s+(.+)$").find(t)?.let {
             val target = it.groupValues[2].removeSurrounding("\"")
             phone("Kena: $target.", "Nggak nemu \"$target\" di layar.") { acc -> acc.findAndClick(target, 4) }
+            return true
+        }
+        Regex("^(tutup|close|kill|matiin|matikan)\\s+(.+)$").find(t)?.let {
+            val target = it.groupValues[2].removeSurrounding("\"")
+            if (!target.startsWith("musik") && !target.startsWith("lagu")) closeApp(target, true)
+            return true
+        }
+        Regex("^(nyalain|nyalakan)\\s+(lagu|musik|music)\\b\\s*(.*)$").find(t)?.let {
+            var q = it.groupValues[3].removeSurrounding("\"").trim()
+            if (q.isEmpty() || q in listOf("favorit", "kesukaan", "pilihanmu", "terserah kamu", "favorite", "favoritmu", "favoritku", "kesukaanku")) q = MusicSearch.favorite()
+            playSong(q, true)
+            return true
+        }
+        Regex("^(putar|puter|mainkan|dengerin|dengarkan|play|cari|carikan|search)\\s+(?:(lagu|musik|music|song|video)\\s+)?(.+)$").find(t)?.let {
+            var q = it.groupValues[3].removeSurrounding("\"").trim()
+            if (q in listOf("favorit", "kesukaan", "pilihanmu", "terserah kamu", "favorite", "favoritmu", "favoritku", "kesukaanku")) q = MusicSearch.favorite()
+            if (q.isNotEmpty()) playSong(q, true)
             return true
         }
         Regex("^(buka|bukain|bukakan|open|nyalain|jalankan|launch)\\s+(.+)$").find(t)?.let {
@@ -1172,23 +1409,29 @@ class CapriService : Service() {
     }
 
     private fun deliver(out: String, isError: Boolean) {
-        lastReply = out
+        val parsed = Actions.extract(out)
+        val action = parsed.action
+        val text = parsed.text.ifBlank {
+            if (action != null) (if (ps("lang", "id") in listOf("id", "auto")) "Oke." else "Okay.") else out
+        }
+        lastReply = text
         if (isError) {
-            showReply(out)
+            showReply(text)
             applyRest()
             return
         }
         val kind = cloudKind()
         if (kind != null) {
             val sync = po("voice_sync", true)
-            if (!sync) { showReply(out); applyRest() }
-            speakCloud(kind, out, sync)
+            if (!sync) { showReply(text); applyRest() }
+            speakCloud(kind, text, sync)
         } else {
-            showReply(out)
+            showReply(text)
             applyRest()
-            expression(out)
-            speakPhone(out)
+            expression(text)
+            speakPhone(text)
         }
+        if (action != null) ui.postDelayed({ executeAction(action) }, 500L)
     }
 
     private fun cloudKind(): String? {
@@ -1260,6 +1503,12 @@ class CapriService : Service() {
     private fun speakPhone(text: String) {
         val clean = cleanForSpeech(text)
         if (voiceOn() && ttsReady && clean.isNotEmpty()) {
+            val loc = Lang.locale(ps("lang", "id")) ?: Locale.getDefault()
+            try {
+                val r = tts?.setLanguage(loc)
+                if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) tts?.setLanguage(Locale.US)
+            } catch (_: Exception) {
+            }
             tts?.setPitch(pitchValue())
             tts?.setSpeechRate(speedValue())
             tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "capri")
@@ -1292,15 +1541,39 @@ class CapriService : Service() {
 
     private fun afterReply() {
         if (callMode && panel != null) listenSoon(400)
+        else if (panel == null && earsOn()) wakeLoop(700)
     }
 
     // ---------- Suara masuk (mik) ----------
 
-    private fun wakeOn() = po("wake", false)
+    private fun wakeOn() = earsOn()
 
-    // Mode "Panggil Capri": mik terus mendengarkan dan membuka chat kalau nama Capri disebut.
+    // Telinga permanen: mik terus mendengarkan, membuka chat kalau nama Capri disebut,
+    // dan (kalau diizinkan) menanggapi obrolan lain yang terdengar.
     private fun wakeLoop(ms: Long) {
-        ui.postDelayed({ if (wakeOn() && panel == null && !listening && !callMode) startListening() }, ms)
+        ui.postDelayed({ if (earsOn() && panel == null && !listening && !callMode && !speaking && !voice.active) startListening() }, ms)
+    }
+
+    // Capri mendengar obrolan yang bukan ditujukan kepadanya. Tanggapi lewat gelembung, bukan panel.
+    private fun heard(t: String) {
+        val key = ps("key", "").trim()
+        if (key.isEmpty() || speaking || voice.active || callMode) return
+        val model = ps("model", "").trim().ifEmpty { Brain.DEFAULT_MODEL }
+        val nick = ps("nick", "").trim()
+        val lang = ps("lang", "id")
+        val replies = ps("replies", "short")
+        val memory = pi("memory", Cfg.MEMORY)
+        val sent = String.format(Locale.US, HEARD_INSTR, t.take(200).replace("\"", "'"))
+        thread {
+            val out = Brain.ask(key, model, sent, nick, lang, replies, memory, true, null, "")
+            if (out.isBlank() || Brain.isError(out)) return@thread
+            ui.post {
+                if (!sleeping && !hidden && !voice.active && !speaking) {
+                    lastUser = t
+                    deliver(out, false)
+                }
+            }
+        }
     }
 
     private val listener = object : RecognitionListener {
@@ -1328,6 +1601,10 @@ class CapriService : Service() {
                     val rest = t.replace(Regex("(?i)capri[,.!?]?"), "").trim()
                     togglePanel()
                     if (rest.isNotEmpty()) ask(rest) else say("Ya? Apa, choom?")
+                } else if (hearAll() && earsOn() && t.length >= 3 && System.currentTimeMillis() - lastHeard > 7000L) {
+                    lastHeard = System.currentTimeMillis()
+                    heard(t)
+                    wakeLoop(900)
                 } else {
                     wakeLoop(500)
                 }
@@ -1481,6 +1758,7 @@ class CapriService : Service() {
     }
 
     override fun onDestroy() {
+        stopMiniPlayer()
         if (pet != null) {
             closePanel()
             removeBubble()

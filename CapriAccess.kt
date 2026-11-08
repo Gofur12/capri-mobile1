@@ -36,6 +36,12 @@ class CapriAccess : AccessibilityService() {
         super.onDestroy()
     }
 
+    fun foregroundPackage(): String? = try {
+        rootInActiveWindow?.packageName?.toString()
+    } catch (_: Exception) {
+        null
+    }
+
     fun home(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
     fun back(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
     fun recents(): Boolean = performGlobalAction(GLOBAL_ACTION_RECENTS)

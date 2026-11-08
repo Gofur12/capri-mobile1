@@ -435,7 +435,7 @@ class MainActivity : Activity() {
         val brain = card("OTAK", "Model dan gaya bicara", cy)
         textField(brain, "API key NVIDIA (gratis di build.nvidia.com)", "key", "nvapi-...", true)
         textField(brain, "Model otak", "model", Brain.DEFAULT_MODEL, false, Brain.DEFAULT_MODEL)
-        choice(brain, "Bahasa Capri", "lang", arrayOf("Bahasa Indonesia", "English", "Ikut bahasa kamu"), arrayOf("id", "en", "auto"), "id")
+        choice(brain, "Bahasa Capri", "lang", Lang.labels(), Lang.codes(), "id")
         slider(
             brain, "Panjang jawaban", "replies", 0, 2, 0, cy,
             fmt = { listOf("Pendek", "Normal", "Panjang")[it] },
@@ -465,7 +465,9 @@ class MainActivity : Activity() {
         toggle(act, "Chaos: kadang glitch atau joget sendiri", "chaos", false)
         toggle(act, "Joget kalau ada musik diputar", "music", true)
         toggle(act, "Not musik dan bunyi note block", "music_notes", true)
-        toggle(act, "Panggil \"Capri\" pakai suara (mik nyala terus)", "wake", false)
+        toggle(act, "Telinga permanen (mik nyala terus, panggil \"Capri\")", "wake", true)
+        toggle(act, "Dengar semua obrolan, bukan cuma namaku", "heareverything", false)
+        note(act, "Telinga permanen membuat Capri selalu siap dipanggil. \"Dengar semua\" membuatnya ikut menanggapi obrolan lain yang terdengar, jadi lebih privat.")
 
         // ----- Suara -----
         val vc = card("SUARA", "Cloud memutar kalimat pertama lebih dulu supaya jedanya pendek", pu)
@@ -491,6 +493,10 @@ class MainActivity : Activity() {
         slider(fx, "Volume bunyi efek", "sounds", 0, 100, Cfg.SOUNDS, ye, fmt = { "$it%" })
         slider(fx, "Glitch layar (area yang kena)", "glitch_area", 0, 100, 50, ye, fmt = { if (it == 0) "Mati" else "$it% layar" })
         toggle(fx, "Bunyi saat mengetik", "typingsound", false)
+        toggle(fx, "Efek spawn dan suara ikonik saat Capri muncul", "spawn", Cfg.SPAWN)
+        button(fx, "Tes efek spawn") {
+            startService(Intent(this, CapriService::class.java).setAction("spawn"))
+        }
 
         // ----- Tampilan dan gerak -----
         val look = card("TAMPILAN & GERAK", "Ukuran, cara duduk, dan tingkah Capri", lm)
@@ -511,7 +517,8 @@ class MainActivity : Activity() {
         // ----- Lihat layar -----
         val scr = card("LIHAT LAYAR", "Gambar layar terbaru hanya dikirim ke otak saat kamu kirim pesan", cy)
         toggle(scr, "Capri lihat layar kamu", "watch", false)
-        toggle(scr, "Ingat apa yang dilihat (tiap menit)", "remember", false)
+        toggle(scr, "Ingat apa yang dilihat", "remember", false)
+        slider(scr, "Perbarui lihat layar", "watch_every", 5, 60, Cfg.WATCH_EVERY, cy, fmt = { "$it detik" })
         slider(scr, "Jumlah catatan layar yang diingat", "watchmem", 10, 96, Cfg.WATCHMEM, cy, fmt = { "$it catatan" })
         slider(scr, "Lama tangkapan layar disimpan", "watchsave", 5, 60, Cfg.WATCHSAVE, cy, fmt = { "$it detik" })
         button(scr, "Mulai lihat layar (Android minta izin)", primary = true) {
@@ -521,6 +528,16 @@ class MainActivity : Activity() {
         button(scr, "Stop lihat layar") {
             startService(Intent(this, CapriService::class.java).setAction("screen_stop"))
         }
+
+        // ----- Musik -----
+        val mus = card("MUSIK", "Cari dan putar lagu di app musik apa pun", pu)
+        toggle(mus, "Pemutar mini di atas app lain", "miniplayer", true)
+        choice(mus, "App musik utama", "music_app", MusicSearch.appChoiceLabels(this), MusicSearch.appChoiceValues(this), "auto")
+        statusRow(mus, "Akses notifikasi (baca lagu yang diputar)", { MediaWatcher.hasAccess(this) }, "Atur") {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
+        note(mus, "Pemutar mini hanya muncul kalau akses notifikasi aktif. Tanpa akses, Capri tetap bisa membuka app dan mencari lagu.")
+        note(mus, "Perintah: \"putar lagu ...\", \"cari lagu ...\", \"jeda\", \"lanjut\", \"lagu berikutnya\", \"lagu sebelumnya\", \"lagu apa ini\".")
 
         // ----- Bantuan -----
         val help = card("BANTUAN", "", muted)
