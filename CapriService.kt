@@ -749,7 +749,7 @@ class CapriService : Service() {
                     applyRest()
                 }
             }
-            if (miniPlayerOn() && MediaWatcher.hasAccess(this)) startMiniPlayer() else if (!miniPlayerOn()) stopMiniPlayer()
+            if (miniPlayerOn() && MediaWatcher.hasAccess(this@CapriService)) startMiniPlayer() else if (!miniPlayerOn()) stopMiniPlayer()
             ui.postDelayed(this, 3000L)
         }
     }
